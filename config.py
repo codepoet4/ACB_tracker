@@ -33,7 +33,7 @@ UPLOAD_FOLDER = 'uploads'
 #   Windows: r'C:\Program Files\stockfish\stockfish.exe'
 #   macOS: '/usr/local/bin/stockfish'
 #   Linux: '/usr/bin/stockfish'
-STOCKFISH_PATH = None
+STOCKFISH_PATH = r'c:\users\rparks\code\stockfish\stockfish-windows-x86-64-avx2.exe'
 
 # Default search depth (higher = stronger but slower)
 # Range: 1-30+

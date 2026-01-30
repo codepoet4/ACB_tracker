@@ -187,12 +187,9 @@ async function performAnalysis(imageFile, fen, side, perspective) {
         const data = await response.json();
         console.log('API Response:', data);
 
-        // If analyzing from image, display the detected FEN (even if there's an error)
-        console.log('Checking for image:', !!imageFile, 'detected_fen:', data.detected_fen);
-        if (imageFile && data.detected_fen) {
-            console.log('Displaying detected FEN:', data.detected_fen);
-            displayDetectedFen(data.detected_fen, data.perspective);
-            fenInput.value = data.detected_fen; // Store detected FEN for re-analysis
+        // Store FEN in input for re-analysis
+        if (imageFile && data.fen) {
+            fenInput.value = data.fen;
         }
 
         if (!response.ok) {
@@ -202,7 +199,7 @@ async function performAnalysis(imageFile, fen, side, perspective) {
             throw new Error(data.error || 'Analysis failed');
         }
 
-        displayResults(data);
+        displayResults(data, imageFile);
     } catch (error) {
         showError(error.message || 'An error occurred during analysis');
         console.error('Analysis error:', error);
@@ -213,7 +210,7 @@ async function performAnalysis(imageFile, fen, side, perspective) {
 }
 
 // Display Results
-function displayResults(data) {
+function displayResults(data, isFromImage) {
     noResultsContent.style.display = 'none';
     errorContent.style.display = 'none';
     resultsContent.style.display = 'block';
@@ -234,6 +231,44 @@ function displayResults(data) {
         movesContainer.style.display = 'none';
     }
 
+    // Display FEN (the actual FEN used for analysis)
+    const fenContainer = document.getElementById('detectedFenContainer');
+    const fenElement = document.getElementById('detectedFen');
+    if (data.fen) {
+        fenElement.textContent = data.fen;
+        fenContainer.style.display = 'block';
+
+        // Remove existing perspective info if any
+        const existingPerspective = fenContainer.querySelector('.perspective-info');
+        if (existingPerspective) {
+            existingPerspective.remove();
+        }
+
+        // Add perspective info if available and from image
+        if (isFromImage && data.perspective) {
+            const perspectiveSpan = document.createElement('small');
+            perspectiveSpan.className = 'perspective-info';
+            perspectiveSpan.style.color = 'var(--text-light)';
+            perspectiveSpan.style.display = 'block';
+            perspectiveSpan.style.marginTop = '4px';
+            perspectiveSpan.textContent = `Board orientation: ${data.perspective}, Move for: ${data.side}`;
+            fenElement.parentElement.appendChild(perspectiveSpan);
+        }
+
+        // Setup copy button
+        const copyBtn = document.getElementById('copyFenBtn');
+        if (copyBtn) {
+            copyBtn.onclick = () => {
+                navigator.clipboard.writeText(data.fen).then(() => {
+                    copyBtn.textContent = 'Copied!';
+                    setTimeout(() => {
+                        copyBtn.textContent = 'Copy FEN';
+                    }, 2000);
+                });
+            };
+        }
+    }
+
     if (data.debug_data) {
         renderDebugTable(data.debug_data);
     }
@@ -245,53 +280,6 @@ function showError(message) {
     resultsContent.style.display = 'none';
     errorContent.style.display = 'block';
     document.getElementById('errorText').textContent = message;
-}
-
-// Display Detected FEN
-function displayDetectedFen(fen, perspective) {
-    console.log('displayDetectedFen called with:', fen, perspective);
-    const container = document.getElementById('detectedFenContainer');
-    const fenElement = document.getElementById('detectedFen');
-
-    if (!container || !fenElement) {
-        console.error('Container or fenElement not found');
-        return;
-    }
-
-    console.log('Setting FEN text:', fen);
-    fenElement.textContent = fen;
-
-    // Remove existing perspective info if any
-    const existingPerspective = container.querySelector('.perspective-info');
-    if (existingPerspective) {
-        existingPerspective.remove();
-    }
-
-    // Add perspective info if available
-    if (perspective) {
-        const perspectiveSpan = document.createElement('small');
-        perspectiveSpan.className = 'perspective-info';
-        perspectiveSpan.style.color = 'var(--text-light)';
-        perspectiveSpan.style.display = 'block';
-        perspectiveSpan.style.marginTop = '4px';
-        perspectiveSpan.textContent = `(${perspective} perspective)`;
-        fenElement.parentElement.appendChild(perspectiveSpan);
-    }
-
-    container.style.display = 'block';
-
-    // Setup copy button
-    const copyBtn = document.getElementById('copyFenBtn');
-    if (copyBtn) {
-        copyBtn.onclick = () => {
-            navigator.clipboard.writeText(fen).then(() => {
-                copyBtn.textContent = 'Copied!';
-                setTimeout(() => {
-                    copyBtn.textContent = 'Copy FEN';
-                }, 2000);
-            });
-        };
-    }
 }
 
 // Loading State

@@ -7,11 +7,12 @@ import base64
 import os
 from app.chess_engine import ChessAnalyzer
 from app.board_detector import BoardDetector
+import config
 
 bp = Blueprint('main', __name__)
 
-# Initialize chess analyzer
-analyzer = ChessAnalyzer()
+# Initialize chess analyzer with path from config
+analyzer = ChessAnalyzer(stockfish_path=config.STOCKFISH_PATH)
 
 
 @bp.route('/')
@@ -33,17 +34,11 @@ def analyze():
     try:
         # Check if we have FEN or image
         detected_fen = None
+        perspective = 'white'  # Default perspective
+
         if 'fen' in request.form:
+            # Manual FEN entry - use FEN as-is, no perspective transformation
             fen = request.form.get('fen')
-
-            # Get and validate perspective parameter
-            perspective = request.form.get('perspective', 'white').lower()
-            if perspective not in ['white', 'black']:
-                return jsonify({'error': 'Invalid perspective. Use "white" or "black"'}), 400
-
-            # Apply perspective transformation if black
-            if perspective == 'black':
-                fen = BoardDetector.flip_board_perspective(fen)
         elif 'image' in request.files:
             image_file = request.files['image']
             if image_file.filename == '':
@@ -73,20 +68,29 @@ def analyze():
         else:
             return jsonify({'error': 'No image or FEN provided'}), 400
 
-        # Get side to move
-        side = request.form.get('side', 'white').lower()
-        if side not in ['white', 'black']:
-            return jsonify({'error': 'Invalid side. Use "white" or "black"'}), 400
+        # For manual FEN entry, extract side to move from the FEN itself
+        # For image upload, use the "Move for" selection to set side to move
+        if 'fen' in request.form:
+            # Manual FEN entry - use the side-to-move from the FEN
+            fen_parts = fen.split(' ')
+            if len(fen_parts) >= 2:
+                fen_side_char = fen_parts[1]
+                side = 'white' if fen_side_char == 'w' else 'black'
+            else:
+                side = 'white'  # Default if FEN is malformed
+        else:
+            # Image upload - use the "Move for" selection
+            side = request.form.get('side', 'white').lower()
+            if side not in ['white', 'black']:
+                return jsonify({'error': 'Invalid side. Use "white" or "black"'}), 400
 
-        # Update FEN to reflect whose turn it is
-        # FEN format: "board w/b castling en-passant halfmove fullmove"
-        fen_parts = fen.split(' ')
-        if len(fen_parts) >= 2:
-            fen_parts[1] = 'w' if side == 'white' else 'b'
-            fen = ' '.join(fen_parts)
+            # Update FEN to reflect whose turn it is
+            fen_parts = fen.split(' ')
+            if len(fen_parts) >= 2:
+                fen_parts[1] = 'w' if side == 'white' else 'b'
+                fen = ' '.join(fen_parts)
 
-        # Store detected FEN after updating side-to-move
-        if 'image' in request.files:
+            # Store detected FEN after updating side-to-move
             detected_fen = fen
 
         # Analyze the position

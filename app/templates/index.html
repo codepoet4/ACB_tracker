@@ -72,15 +72,6 @@
                             <div id="imagePreview" class="image-preview-compact" style="display: none;">
                                 <img id="previewImg" src="" alt="Preview">
                             </div>
-                            <div id="detectedFenContainer" style="display: none; margin-top: 10px;">
-                                <div class="form-group">
-                                    <label>Detected FEN:</label>
-                                    <div style="background: #f5f5f5; padding: 8px; border-radius: 4px; word-break: break-all; font-family: monospace; font-size: 11px;">
-                                        <code id="detectedFen"></code>
-                                    </div>
-                                    <button class="btn btn-small" id="copyFenBtn" style="margin-top: 6px;">Copy FEN</button>
-                                </div>
-                            </div>
                         </div>
 
                         <!-- FEN Input Tab -->
@@ -123,6 +114,17 @@
                                 <label>Top 10 Legal Moves:</label>
                                 <div id="resultMoves" class="moves-list"></div>
                             </div>
+
+                            <!-- Detected FEN -->
+                            <div id="detectedFenContainer" class="result-item" style="display: none;">
+                                <label>Position (FEN):</label>
+                                <div style="background: #f5f5f5; padding: 10px; border-radius: 4px; word-break: break-all; font-family: monospace; font-size: 11px;">
+                                    <code id="detectedFen"></code>
+                                </div>
+                                <button class="btn btn-small" id="copyFenBtn" style="margin-top: 8px;">Copy FEN</button>
+                            </div>
+
+                            <!-- Debug info will be inserted here by JavaScript -->
                         </div>
 
                         <div id="errorContent" style="display: none;">
