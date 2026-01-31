@@ -135,12 +135,15 @@ class ChessAnalyzer:
             score = info.get('score')
             evaluation = None
             if score:
-                if score.is_mate():
-                    evaluation = f"Mate in {score.mate()}"
+                # PovScore needs to be converted to absolute score
+                white_score = score.white() if hasattr(score, 'white') else score
+
+                if white_score.is_mate():
+                    mate_in = white_score.mate()
+                    evaluation = f"Mate in {abs(mate_in)}" if mate_in else "Mate"
                 else:
                     # Convert to centipawns, positive is good for white
-                    # PovScore returns centipawns from the perspective of the side to move
-                    cp = score.white().cp if hasattr(score, 'white') else (score.cp if hasattr(score, 'cp') else None)
+                    cp = white_score.score() if hasattr(white_score, 'score') else white_score.cp
                     evaluation = f"{cp/100:.2f}" if cp is not None else "Draw"
             
             return {

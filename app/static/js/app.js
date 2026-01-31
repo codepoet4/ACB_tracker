@@ -193,41 +193,9 @@ async function performAnalysis(imageFile, fen, side, perspective) {
         }
 
         if (!response.ok) {
-            // Show results panel even on error to display FEN
-            noResultsContent.style.display = 'none';
-            resultsContent.style.display = 'block';
-
-            // Display FEN if available
-            if (data.fen) {
-                const fenContainer = document.getElementById('detectedFenContainer');
-                const fenDisplay = document.getElementById('detectedFen');
-                fenContainer.style.display = 'block';
-                fenDisplay.textContent = data.fen;
-
-                // Add side and perspective info if available
-                const label = fenContainer.querySelector('label');
-                const existingInfo = label.querySelector('.fen-info');
-                if (existingInfo) {
-                    existingInfo.remove();
-                }
-
-                if (data.side || data.perspective) {
-                    const infoSpan = document.createElement('small');
-                    infoSpan.className = 'fen-info';
-                    infoSpan.style.color = 'var(--text-light)';
-                    infoSpan.style.marginLeft = '12px';
-                    const parts = [];
-                    if (data.side) parts.push(`Move: ${data.side}`);
-                    if (data.perspective) parts.push(`${data.perspective} perspective`);
-                    infoSpan.textContent = `(${parts.join(', ')})`;
-                    label.appendChild(infoSpan);
-                }
-            }
-
-            if (data.debug_data) {
-                renderDebugTable(data.debug_data);
-            }
-            throw new Error(data.error || 'Analysis failed');
+            // Display FEN and error together
+            displayErrorWithFen(data);
+            return;
         }
 
         displayResults(data, imageFile);
@@ -300,6 +268,57 @@ function displayResults(data, isFromImage) {
         }
     }
 
+    if (data.debug_data) {
+        renderDebugTable(data.debug_data);
+    }
+}
+
+// Show Error with FEN
+function displayErrorWithFen(data) {
+    noResultsContent.style.display = 'none';
+    resultsContent.style.display = 'block';
+    errorContent.style.display = 'none';
+
+    // Hide success elements
+    document.getElementById('resultMove').style.display = 'none';
+    document.getElementById('resultMoveSan').style.display = 'none';
+    const resultItem = document.querySelector('.result-item.highlight');
+    if (resultItem) resultItem.style.display = 'none';
+
+    // Display error message in results area
+    const movesContainer = document.getElementById('movesContainer');
+    movesContainer.style.display = 'block';
+    document.getElementById('resultMoves').innerHTML =
+        `<div class="error-message" style="padding: 15px; background: #fee; border: 1px solid #fcc; border-radius: 4px; color: #c33;">${data.error || 'Analysis failed'}</div>`;
+
+    // Display FEN if available
+    if (data.fen) {
+        const fenContainer = document.getElementById('detectedFenContainer');
+        const fenDisplay = document.getElementById('detectedFen');
+        fenContainer.style.display = 'block';
+        fenDisplay.textContent = data.fen;
+
+        // Add side and perspective info if available
+        const label = fenContainer.querySelector('label');
+        const existingInfo = label ? label.querySelector('.fen-info') : null;
+        if (existingInfo) {
+            existingInfo.remove();
+        }
+
+        if (label && (data.side || data.perspective)) {
+            const infoSpan = document.createElement('small');
+            infoSpan.className = 'fen-info';
+            infoSpan.style.color = 'var(--text-light)';
+            infoSpan.style.marginLeft = '12px';
+            const parts = [];
+            if (data.side) parts.push(`Move: ${data.side}`);
+            if (data.perspective) parts.push(`${data.perspective} perspective`);
+            infoSpan.textContent = `(${parts.join(', ')})`;
+            label.appendChild(infoSpan);
+        }
+    }
+
+    // Display debug data if available
     if (data.debug_data) {
         renderDebugTable(data.debug_data);
     }
