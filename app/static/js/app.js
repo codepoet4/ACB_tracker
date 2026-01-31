@@ -193,6 +193,37 @@ async function performAnalysis(imageFile, fen, side, perspective) {
         }
 
         if (!response.ok) {
+            // Show results panel even on error to display FEN
+            noResultsContent.style.display = 'none';
+            resultsContent.style.display = 'block';
+
+            // Display FEN if available
+            if (data.fen) {
+                const fenContainer = document.getElementById('detectedFenContainer');
+                const fenDisplay = document.getElementById('detectedFen');
+                fenContainer.style.display = 'block';
+                fenDisplay.textContent = data.fen;
+
+                // Add side and perspective info if available
+                const label = fenContainer.querySelector('label');
+                const existingInfo = label.querySelector('.fen-info');
+                if (existingInfo) {
+                    existingInfo.remove();
+                }
+
+                if (data.side || data.perspective) {
+                    const infoSpan = document.createElement('small');
+                    infoSpan.className = 'fen-info';
+                    infoSpan.style.color = 'var(--text-light)';
+                    infoSpan.style.marginLeft = '12px';
+                    const parts = [];
+                    if (data.side) parts.push(`Move: ${data.side}`);
+                    if (data.perspective) parts.push(`${data.perspective} perspective`);
+                    infoSpan.textContent = `(${parts.join(', ')})`;
+                    label.appendChild(infoSpan);
+                }
+            }
+
             if (data.debug_data) {
                 renderDebugTable(data.debug_data);
             }

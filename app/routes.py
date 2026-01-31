@@ -97,11 +97,15 @@ def analyze():
         analysis = analyzer.analyze_position(fen, side, depth=20)
         
         if analysis.get('error'):
-            # Return error but include detected FEN if it came from image
-            error_response = {'error': analysis.get('error')}
+            # Return error but always include the FEN
+            error_response = {
+                'error': analysis.get('error'),
+                'fen': fen,
+                'side': side,
+                'perspective': perspective
+            }
             if detected_fen:
                 error_response['detected_fen'] = detected_fen
-                error_response['fen'] = detected_fen  # Also include in fen field
             if 'debug_data' in locals() and debug_data:
                 error_response['debug_data'] = debug_data
             return jsonify(error_response), 400
