@@ -28,10 +28,10 @@ function computeACB(transactions) {
     const qty = Number(tx.shares) || 0, price = Number(tx.pricePerShare) || 0, commission = Number(tx.commission) || 0, amount = Number(tx.amount) || 0;
     let gainLoss = null, note = "";
     switch (tx.type) {
-      case "BUY": totalACB = r2(totalACB + qty * price + commission); shares += qty; break;
-      case "SELL": if (shares > 0) { const aps = totalACB / shares; gainLoss = r2(r2(qty * price - commission) - r2(aps * qty)); totalACB = r2(totalACB - r2(aps * qty)); shares -= qty; } break;
+      case "BUY": { const cost = amount || qty * price; totalACB = r2(totalACB + cost + commission); shares += qty; break; }
+      case "SELL": if (shares > 0) { const proceeds = amount || qty * price; const aps = totalACB / shares; gainLoss = r2(r2(proceeds - commission) - r2(aps * qty)); totalACB = r2(totalACB - r2(aps * qty)); shares -= qty; } break;
       case "ROC": totalACB = r2(totalACB - amount); if (totalACB < 0) { gainLoss = r2(-totalACB); note = "Excess ROC → gain"; totalACB = 0; } break;
-      case "REINVESTED_DIST": totalACB = r2(totalACB + qty * price + commission); shares += qty; note = "DRIP"; break;
+      case "REINVESTED_DIST": { const cost = amount || qty * price; totalACB = r2(totalACB + cost + commission); shares += qty; note = "DRIP"; break; }
       case "CAPITAL_GAINS_DIST": totalACB = r2(totalACB + amount); note = "Cap gains → ACB"; break;
       case "STOCK_SPLIT": shares *= (qty || 2); note = `Split ${qty || 2}:1`; break;
       case "SUPERFICIAL_LOSS": totalACB = r2(totalACB + amount); note = "Denied loss → ACB"; break;
@@ -114,8 +114,8 @@ function importACBca(csvText, existing) {
     const memo = (row["Memo"]||"").trim();
     let type, tShares = "", tPrice = "", tComm = "0", tAmt = "";
     switch (rawType) {
-      case "Buy": type = "BUY"; tShares = shares; tPrice = aps; tComm = comm; break;
-      case "Sell": type = "SELL"; tShares = shares; tPrice = aps; tComm = comm; break;
+      case "Buy": type = "BUY"; tShares = shares; tPrice = aps; tComm = comm; tAmt = amount; break;
+      case "Sell": type = "SELL"; tShares = shares; tPrice = aps; tComm = comm; tAmt = amount; break;
       case "Return of Capital": type = "ROC"; tAmt = Math.abs(amount); break;
       case "Reinvested Cap. Gain Dist.": type = "CAPITAL_GAINS_DIST"; tAmt = Math.abs(dacb); break;
       case "Capital Gains Dividend": type = "CAPITAL_GAINS_DIST"; tAmt = Math.abs(dacb); break;
