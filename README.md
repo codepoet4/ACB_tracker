@@ -1,69 +1,34 @@
-# Chess Board Analyzer
+# ACB Tracker
 
-A web application that analyzes chess board screenshots and suggests the best next move using the Stockfish chess engine.
+A React application for tracking Adjusted Cost Base (ACB), capital gains, and ETF distributions for Canadian investors.
 
 ## Features
 
-- Upload chess board screenshots
-- Automatic chess board detection using computer vision
-- AI-powered move suggestions for white or black
-- Real-time board analysis
-- Beautiful, intuitive web interface
+- Multiple portfolio support
+- Track transactions: Buy, Sell, Return of Capital, Reinvested Distributions, Capital Gains Distributions, Stock Splits, Superficial Losses, ACB Adjustments
+- Automatic ACB calculation per CRA rules
+- Capital gains/losses reporting by tax year
+- Auto-fetch ETF distribution data (ROC, capital gains) via API
+- CSV import/export
+- Mobile-friendly dark UI
 
-## Prerequisites
-
-- Python 3.8+
-- Stockfish chess engine (installed separately on your system)
-
-## Installation
-
-1. Clone or navigate to the project directory
-2. Install Python dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. Download and install Stockfish:
-   - **Windows**: Download from https://stockfishchess.org/download/
-   - **macOS**: `brew install stockfish`
-   - **Linux**: `sudo apt-get install stockfish`
-
-   After installation, make sure the stockfish executable is in your PATH or update the path in `app/chess_engine.py`
-
-## Running the Application
+## Getting Started
 
 ```bash
-python run.py
+npm install
+npm run dev
 ```
 
-The application will be available at `http://localhost:5000`
+The application will be available at `http://localhost:5173`.
 
-## Usage
+## Build
 
-1. Take a screenshot of a chess board or upload an image
-2. Select whether to analyze for White or Black
-3. Click "Analyze Board"
-4. The application will detect the board, analyze the position, and suggest the best move
+```bash
+npm run build
+```
 
-## Project Structure
+## Tech Stack
 
-- `run.py` - Entry point for the Flask application
-- `app/` - Main application directory
-  - `__init__.py` - Flask app initialization
-  - `routes.py` - API routes
-  - `chess_engine.py` - Chess analysis with Stockfish
-  - `board_detector.py` - Chessboard detection from images
-  - `templates/` - HTML templates
-  - `static/` - CSS and JavaScript files
-
-## Technology Stack
-
-- **Backend**: Flask (Python)
-- **Chess Engine**: Stockfish
-- **Chess Logic**: python-chess
-- **Image Processing**: OpenCV, NumPy
-- **Frontend**: HTML5, CSS3, JavaScript
-
-## License
-
-MIT
+- React 18
+- Vite
+- PapaParse (CSV parsing)
