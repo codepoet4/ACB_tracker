@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import * as Papa from "papaparse";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
+const r2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 const fmt = (n) => (n == null || isNaN(n)) ? "$0.00" : `$${Number(n).toLocaleString("en-CA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const shortSym = (s, max = 24) => s && s.length > max ? s.slice(0, max) + "\u2026" : s;
 const today = () => new Date().toISOString().slice(0, 10);
@@ -27,18 +28,18 @@ function computeACB(transactions) {
     const qty = Number(tx.shares) || 0, price = Number(tx.pricePerShare) || 0, commission = Number(tx.commission) || 0, amount = Number(tx.amount) || 0;
     let gainLoss = null, note = "";
     switch (tx.type) {
-      case "BUY": totalACB += qty * price + commission; shares += qty; break;
-      case "SELL": if (shares > 0) { const aps = totalACB / shares; gainLoss = (qty * price - commission) - aps * qty; totalACB -= aps * qty; shares -= qty; } break;
-      case "ROC": totalACB -= amount; if (totalACB < 0) { gainLoss = -totalACB; note = "Excess ROC → gain"; totalACB = 0; } break;
-      case "REINVESTED_DIST": totalACB += qty * price + commission; shares += qty; note = "DRIP"; break;
-      case "CAPITAL_GAINS_DIST": totalACB += amount; note = "Cap gains → ACB"; break;
+      case "BUY": totalACB = r2(totalACB + qty * price + commission); shares += qty; break;
+      case "SELL": if (shares > 0) { const aps = totalACB / shares; gainLoss = r2(r2(qty * price - commission) - r2(aps * qty)); totalACB = r2(totalACB - r2(aps * qty)); shares -= qty; } break;
+      case "ROC": totalACB = r2(totalACB - amount); if (totalACB < 0) { gainLoss = r2(-totalACB); note = "Excess ROC → gain"; totalACB = 0; } break;
+      case "REINVESTED_DIST": totalACB = r2(totalACB + qty * price + commission); shares += qty; note = "DRIP"; break;
+      case "CAPITAL_GAINS_DIST": totalACB = r2(totalACB + amount); note = "Cap gains → ACB"; break;
       case "STOCK_SPLIT": shares *= (qty || 2); note = `Split ${qty || 2}:1`; break;
-      case "SUPERFICIAL_LOSS": totalACB += amount; note = "Denied loss → ACB"; break;
-      case "ACB_ADJUSTMENT": totalACB += amount; if (totalACB < 0) { gainLoss = -totalACB; totalACB = 0; } break;
+      case "SUPERFICIAL_LOSS": totalACB = r2(totalACB + amount); note = "Denied loss → ACB"; break;
+      case "ACB_ADJUSTMENT": totalACB = r2(totalACB + amount); if (totalACB < 0) { gainLoss = r2(-totalACB); totalACB = 0; } break;
     }
-    rows.push({ ...tx, runningShares: shares, runningACB: totalACB, acbPerShare: shares > 0 ? totalACB / shares : 0, gainLoss, note: tx.note || note });
+    rows.push({ ...tx, runningShares: shares, runningACB: totalACB, acbPerShare: shares > 0 ? r2(totalACB / shares) : 0, gainLoss, note: tx.note || note });
   }
-  return { rows, totalShares: shares, totalACB, acbPerShare: shares > 0 ? totalACB / shares : 0 };
+  return { rows, totalShares: shares, totalACB, acbPerShare: shares > 0 ? r2(totalACB / shares) : 0 };
 }
 
 const CSV_HEADERS = ["portfolio","symbol","date","type","shares","pricePerShare","commission","amount","note"];
@@ -134,9 +135,9 @@ function generateCapGainsReport(portfolios, year) {
     for (const r of rows) if (r.gainLoss != null && r.date.startsWith(String(year)))
       allRows.push({ portfolio: p.name, symbol: sym, date: r.date, type: r.type, gainLoss: r.gainLoss, shares: r.shares, price: r.pricePerShare, note: r.note });
   }
-  const g = allRows.filter(r => r.gainLoss > 0).reduce((s, r) => s + r.gainLoss, 0);
-  const l = allRows.filter(r => r.gainLoss < 0).reduce((s, r) => s + r.gainLoss, 0);
-  return { rows: allRows, totalGains: g, totalLosses: l, net: g + l };
+  const g = r2(allRows.filter(r => r.gainLoss > 0).reduce((s, r) => s + r.gainLoss, 0));
+  const l = r2(allRows.filter(r => r.gainLoss < 0).reduce((s, r) => s + r.gainLoss, 0));
+  return { rows: allRows, totalGains: g, totalLosses: l, net: r2(g + l) };
 }
 
 async function fetchETFDistributions(symbol, year) {
