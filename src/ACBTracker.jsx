@@ -3,6 +3,7 @@ import * as Papa from "papaparse";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const fmt = (n) => (n == null || isNaN(n)) ? "$0.00" : `$${Number(n).toLocaleString("en-CA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const shortSym = (s, max = 24) => s && s.length > max ? s.slice(0, max) + "\u2026" : s;
 const today = () => new Date().toISOString().slice(0, 10);
 
 const TX_TYPES = [
@@ -90,9 +91,9 @@ function importACBca(csvText, existing) {
     }
   }
   const resolveTicker = (name) => {
-    let t = nameToTicker[name] || "";
-    t = t.replace(/\?$/, "").trim().toUpperCase();
-    return t || name.replace(/[^A-Za-z0-9.]/g, "").toUpperCase() || "UNKNOWN";
+    let t = (nameToTicker[name] || "").replace(/\?/g, "").trim().toUpperCase();
+    if (t && t.length >= 2 && /^[A-Z0-9.]+$/.test(t)) return t;
+    return name || "UNKNOWN";
   };
   // Parse transactions
   const txRows = Papa.parse(lines.slice(txStart).join("\n"), { header: true, skipEmptyLines: true }).data;
@@ -385,7 +386,7 @@ export default function ACBTracker() {
                   <div key={h.symbol} style={{ ...S.card, cursor: "pointer" }} onClick={() => { setActiveSym(h.symbol); setView("transactions"); }}>
                     <div style={S.row}>
                       <div>
-                        <div style={{ fontSize: 16, fontWeight: 700, color: "#fff" }}>{h.symbol}</div>
+                        <div style={{ fontSize: 16, fontWeight: 700, color: "#fff" }}>{shortSym(h.symbol)}</div>
                         <div style={{ fontSize: 12, color: "#6b7280" }}>{h.txCount} txn{h.txCount !== 1 ? "s" : ""}</div>
                       </div>
                       <div style={{ textAlign: "right" }}>
@@ -410,7 +411,7 @@ export default function ACBTracker() {
         {view === "transactions" && activeSym && (
           <div>
             <button onClick={() => { setView("holdings"); setActiveSym(null); setShowETF(false); }} style={{ background: "none", border: "none", color: "#9ca3af", fontSize: 14, cursor: "pointer", padding: 0, marginBottom: 12 }}>&larr; Holdings</button>
-            <div style={{ fontSize: 18, fontWeight: 700, color: "#fff", marginBottom: 12 }}>{activeSym}</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: "#fff", marginBottom: 12 }} title={activeSym}>{shortSym(activeSym, 32)}</div>
 
             {/* Action buttons */}
             <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
@@ -485,7 +486,7 @@ export default function ACBTracker() {
             {report.rows.length > 0 ? report.rows.map((r, i) => (
               <div key={i} style={S.txCard}>
                 <div style={S.row}>
-                  <div><span style={{ color: "#fff", fontWeight: 600 }}>{r.symbol}</span><span style={{ color: "#6b7280", fontSize: 12, marginLeft: 6 }}>{r.portfolio}</span></div>
+                  <div><span style={{ color: "#fff", fontWeight: 600 }}>{shortSym(r.symbol)}</span><span style={{ color: "#6b7280", fontSize: 12, marginLeft: 6 }}>{r.portfolio}</span></div>
                   <span style={{ color: r.gainLoss >= 0 ? "#34d399" : "#f87171", fontWeight: 700, fontSize: 15 }}>{fmt(r.gainLoss)}</span>
                 </div>
                 <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>{r.date} · {txLabel(r.type)}{r.note ? ` · ${r.note}` : ""}</div>
