@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import * as Papa from "papaparse";
 
+const APP_VERSION = "1.0.0";
 const uid = () => Math.random().toString(36).slice(2, 10);
 const r2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 const fmt = (n) => (n == null || isNaN(n)) ? "$0.00" : `$${Number(n).toLocaleString("en-CA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -310,6 +311,7 @@ export default function ACBTracker() {
   const [importMsg, setImportMsg] = useState("");
   const [delConfirm, setDelConfirm] = useState(null);
   const [showETF, setShowETF] = useState(false);
+  const [showZero, setShowZero] = useState(false);
 
   const portfolio = portfolios[activePIdx] || portfolios[0];
   const blankTx = { date: today(), type: "BUY", shares: "", pricePerShare: "", commission: "0", amount: "", note: "" };
@@ -357,7 +359,7 @@ export default function ACBTracker() {
       {/* Header */}
       <div style={S.header}>
         <div style={S.row}>
-          <div><div style={S.title}>ACB Tracker</div><div style={S.subtitle}>Cost Base · Capital Gains · ETF Distributions</div></div>
+          <div><div style={S.title}>ACB Tracker <span style={{ fontSize: 12, fontWeight: 400, color: "#6b7280" }}>v{APP_VERSION}</span></div><div style={S.subtitle}>Cost Base · Capital Gains · ETF Distributions</div></div>
           <button onClick={() => setShowPMgr(true)} style={{ ...S.btnSm("#252d3d"), border: "1px solid #374151" }}>&#9881;</button>
         </div>
         {/* Portfolio selector */}
@@ -383,7 +385,12 @@ export default function ACBTracker() {
               <div style={{ textAlign: "center", padding: "48px 0", color: "#6b7280" }}><div style={{ fontSize: 36, marginBottom: 8 }}>&#128202;</div><div>No securities yet</div></div>
             ) : (
               <div style={{ marginTop: 12 }}>
-                {holdingsSummary.map(h => (
+                {holdingsSummary.some(h => h.totalShares === 0) && (
+                  <button onClick={() => setShowZero(v => !v)} style={{ ...S.btnSm("#252d3d"), border: "1px solid #374151", marginBottom: 10, width: "100%" }}>
+                    {showZero ? "Hide" : "Show"} 0-Share Holdings ({holdingsSummary.filter(h => h.totalShares === 0).length})
+                  </button>
+                )}
+                {holdingsSummary.filter(h => showZero || h.totalShares !== 0).map(h => (
                   <div key={h.symbol} style={{ ...S.card, cursor: "pointer" }} onClick={() => { setActiveSym(h.symbol); setView("transactions"); }}>
                     <div style={S.row}>
                       <div>
