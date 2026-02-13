@@ -249,15 +249,13 @@ export default function ACBTracker() {
   const [txForm, setTxForm] = useState(blankTx);
 
   useEffect(() => {
-    (async () => {
-      try {
-        const r = await window.storage.get("acb-portfolios");
-        if (r && r.value) { const p = JSON.parse(r.value); if (Array.isArray(p) && p.length > 0) setPortfolios(p); }
-      } catch (e) { console.error("Load error:", e); }
-    })();
+    try {
+      const raw = localStorage.getItem("acb-portfolios");
+      if (raw) { const p = JSON.parse(raw); if (Array.isArray(p) && p.length > 0) setPortfolios(p); }
+    } catch (e) { console.error("Load error:", e); }
   }, []);
 
-  const save = useCallback((p) => { setPortfolios(p); window.storage.set("acb-portfolios", JSON.stringify(p)).catch(() => {}); }, []);
+  const save = useCallback((p) => { setPortfolios(p); try { localStorage.setItem("acb-portfolios", JSON.stringify(p)); } catch {} }, []);
 
   const holdingsSummary = useMemo(() =>
     Object.keys(portfolio.holdings).map(sym => {
