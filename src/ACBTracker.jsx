@@ -121,6 +121,7 @@ function importACBca(csvText, existing) {
       case "Return of Capital": type = "ROC"; tAmt = Math.abs(amount); break;
       case "Reinvested Cap. Gain Dist.": type = "CAPITAL_GAINS_DIST"; tAmt = Math.abs(dacb); break;
       case "Capital Gains Dividend": type = "CAPITAL_GAINS_DIST"; tAmt = Math.abs(dacb); break;
+      case "Stock Split": type = "STOCK_SPLIT"; tShares = shares; break;
       default: type = "ACB_ADJUSTMENT"; tAmt = dacb; break;
     }
     let pIdx = pMap[portfolioName.toLowerCase()];
@@ -137,7 +138,7 @@ function generateCapGainsReport(holdings, year) {
     // Find earliest acquisition date for this symbol
     const firstBuy = rows.find(r => r.type === "BUY" || r.type === "REINVESTED_DIST");
     const acqYear = firstBuy ? firstBuy.date.slice(0, 4) : "";
-    for (const r of rows) if (r.gainLoss != null && r.date.startsWith(String(year)))
+    for (const r of rows) if ((r.gainLoss != null || r.type === "STOCK_SPLIT") && r.date.startsWith(String(year)))
       allRows.push({ symbol: sym, date: r.date, type: r.type, shares: r.shares, proceeds: r.proceeds, dispositionACB: r.dispositionACB, outlays: r.outlays, gainLoss: r.gainLoss, acquisitionYear: acqYear, note: r.note });
   }
   const g = r2(allRows.filter(r => r.gainLoss > 0).reduce((s, r) => s + r.gainLoss, 0));
@@ -163,14 +164,10 @@ function exportSchedule3PDF(report, portfolioName, year) {
   autoTable(doc, {
     startY: 40,
     head: [["Description", "Year\nAcquired", "Proceeds of\nDisposition", "Adjusted\nCost Base", "Outlays &\nExpenses", "Gain (Loss)"]],
-    body: report.rows.map(r => [
-      shortSym(r.symbol, 30),
-      r.acquisitionYear || "",
-      f(r.proceeds),
-      f(r.dispositionACB),
-      f(r.outlays),
-      f(r.gainLoss),
-    ]),
+    body: report.rows.map(r => r.type === "STOCK_SPLIT"
+      ? [shortSym(r.symbol, 30), { content: r.note || "Stock Split", colSpan: 5, styles: { fontStyle: "italic", textColor: [200, 160, 50] } }]
+      : [shortSym(r.symbol, 30), r.acquisitionYear || "", f(r.proceeds), f(r.dispositionACB), f(r.outlays), f(r.gainLoss)]
+    ),
     foot: [["Totals", "", f(report.totalProceeds), f(report.totalACB), f(report.totalOutlays), f(report.net)]],
     headStyles: { fillColor: [30, 41, 59], textColor: 255, fontSize: 8, fontStyle: "bold" },
     footStyles: { fillColor: [30, 41, 59], textColor: 255, fontSize: 9, fontStyle: "bold" },
@@ -570,11 +567,15 @@ export default function ACBTracker() {
                 {report.rows.map((r, i) => (
                   <div key={i} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1.5fr 1.5fr 1fr 1.5fr", gap: 4, padding: "8px 12px", background: i % 2 === 0 ? "#141820" : "#1a1f2e", borderBottom: "1px solid #2d3548", fontSize: 12 }}>
                     <div style={{ color: "#fff", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.symbol}>{shortSym(r.symbol, 18)}</div>
-                    <div style={{ textAlign: "center", color: "#9ca3af" }}>{r.acquisitionYear}</div>
-                    <div style={{ textAlign: "right", color: "#d1d5db" }}>{fmt(r.proceeds)}</div>
-                    <div style={{ textAlign: "right", color: "#d1d5db" }}>{fmt(r.dispositionACB)}</div>
-                    <div style={{ textAlign: "right", color: "#d1d5db" }}>{fmt(r.outlays)}</div>
-                    <div style={{ textAlign: "right", fontWeight: 600, color: r.gainLoss >= 0 ? "#34d399" : "#f87171" }}>{fmt(r.gainLoss)}</div>
+                    {r.type === "STOCK_SPLIT" ? (
+                      <div style={{ gridColumn: "2 / 7", color: "#fbbf24", fontStyle: "italic" }}>{r.note || "Stock Split"}</div>
+                    ) : (<>
+                      <div style={{ textAlign: "center", color: "#9ca3af" }}>{r.acquisitionYear}</div>
+                      <div style={{ textAlign: "right", color: "#d1d5db" }}>{fmt(r.proceeds)}</div>
+                      <div style={{ textAlign: "right", color: "#d1d5db" }}>{fmt(r.dispositionACB)}</div>
+                      <div style={{ textAlign: "right", color: "#d1d5db" }}>{fmt(r.outlays)}</div>
+                      <div style={{ textAlign: "right", fontWeight: 600, color: r.gainLoss >= 0 ? "#34d399" : "#f87171" }}>{fmt(r.gainLoss)}</div>
+                    </>)}
                   </div>
                 ))}
                 {/* Totals row */}
