@@ -369,7 +369,7 @@ export default function ACBTracker() {
           </select>
         </div>
         <div style={S.nav}>
-          {[["holdings", "Holdings"], ["report", "Report"], ["import", "Import/Export"], ["docs", "Docs"]].map(([k, l]) => (
+          {[["holdings", "Holdings"], ["report", "CG Report"], ["import", "Import/Export"], ["docs", "Docs"]].map(([k, l]) => (
             <button key={k} onClick={() => { setView(k); if (k !== "transactions") setActiveSym(null); setShowETF(false); }} style={S.navBtn(view === k || (view === "transactions" && k === "holdings"))}>{l}</button>
           ))}
         </div>
