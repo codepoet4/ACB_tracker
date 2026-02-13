@@ -21,7 +21,7 @@ CORES="${CORES:-1}"
 BRIDGE="${BRIDGE:-vmbr0}"
 LXC_IP="${LXC_IP:-dhcp}"
 GW="${GW:-}"
-REPO_URL="${REPO_URL:-https://github.com/codepoet4/chess-analyzer.git}"
+REPO_URL="${REPO_URL:-https://github.com/codepoet4/ACB_tracker.git}"
 APP_PORT="${APP_PORT:-8080}"
 
 # ─── Resolve network flags ───
