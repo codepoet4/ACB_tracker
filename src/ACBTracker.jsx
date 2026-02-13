@@ -246,9 +246,9 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
       if (r.found) {
         setResult(r);
         const txs = [], d = r.recordDate || `${selectedYear}-12-31`, pu = r.perUnit || {};
-        if (pu.returnOfCapital > 0) txs.push({ id: uid(), date: d, type: "ROC", shares: "", pricePerShare: "", commission: "0", amount: (pu.returnOfCapital * sharesAtYearEnd).toFixed(2), note: `[Auto-fetched ${selectedYear}] ROC $${pu.returnOfCapital}/u × ${sharesAtYearEnd}`, _perUnit: pu.returnOfCapital, _comp: "ROC" });
-        if (pu.reinvestedCapitalGains > 0) txs.push({ id: uid(), date: d, type: "CAPITAL_GAINS_DIST", shares: "", pricePerShare: "", commission: "0", amount: (pu.reinvestedCapitalGains * sharesAtYearEnd).toFixed(2), note: `[Auto-fetched ${selectedYear}] Reinv. cap gains $${pu.reinvestedCapitalGains}/u × ${sharesAtYearEnd}`, _perUnit: pu.reinvestedCapitalGains, _comp: "Reinv. Cap Gains" });
-        if (pu.capitalGains > 0) txs.push({ id: uid(), date: d, type: "CAPITAL_GAINS_DIST", shares: "", pricePerShare: "", commission: "0", amount: (pu.capitalGains * sharesAtYearEnd).toFixed(2), note: `[Auto-fetched ${selectedYear}] Cap gains $${pu.capitalGains}/u × ${sharesAtYearEnd}`, _perUnit: pu.capitalGains, _comp: "Cap Gains" });
+        if (pu.returnOfCapital > 0) txs.push({ id: uid(), date: d, type: "ROC", shares: "", pricePerShare: "", commission: "0", amount: pu.returnOfCapital * sharesAtYearEnd, note: `[Auto-fetched ${selectedYear}] ROC $${pu.returnOfCapital}/u × ${sharesAtYearEnd}`, _perUnit: pu.returnOfCapital, _comp: "ROC" });
+        if (pu.reinvestedCapitalGains > 0) txs.push({ id: uid(), date: d, type: "CAPITAL_GAINS_DIST", shares: "", pricePerShare: "", commission: "0", amount: pu.reinvestedCapitalGains * sharesAtYearEnd, note: `[Auto-fetched ${selectedYear}] Reinv. cap gains $${pu.reinvestedCapitalGains}/u × ${sharesAtYearEnd}`, _perUnit: pu.reinvestedCapitalGains, _comp: "Reinv. Cap Gains" });
+        if (pu.capitalGains > 0) txs.push({ id: uid(), date: d, type: "CAPITAL_GAINS_DIST", shares: "", pricePerShare: "", commission: "0", amount: pu.capitalGains * sharesAtYearEnd, note: `[Auto-fetched ${selectedYear}] Cap gains $${pu.capitalGains}/u × ${sharesAtYearEnd}`, _perUnit: pu.capitalGains, _comp: "Cap Gains" });
         setProposed(txs);
         setStatus(txs.length > 0 ? "found" : "noitems");
       } else { setResult(r); setStatus("notfound"); }
