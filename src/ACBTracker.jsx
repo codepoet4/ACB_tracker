@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import * as Papa from "papaparse";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 
 const APP_VERSION = "1.0.0";
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -27,10 +29,10 @@ function computeACB(transactions) {
   const sorted = [...transactions].sort((a, b) => a.date.localeCompare(b.date) || (a._order || 0) - (b._order || 0));
   for (const tx of sorted) {
     const qty = Number(tx.shares) || 0, price = Number(tx.pricePerShare) || 0, commission = Number(tx.commission) || 0, amount = Number(tx.amount) || 0;
-    let gainLoss = null, note = "";
+    let gainLoss = null, note = "", txProceeds = null, txDispositionACB = null, txOutlays = null;
     switch (tx.type) {
       case "BUY": { const cost = amount || qty * price; totalACB = r2(totalACB + cost + commission); shares += qty; break; }
-      case "SELL": if (shares > 0) { const proceeds = amount || qty * price; const aps = totalACB / shares; gainLoss = r2(r2(proceeds - commission) - r2(aps * qty)); totalACB = r2(totalACB - r2(aps * qty)); shares -= qty; } break;
+      case "SELL": if (shares > 0) { const proceeds = amount || qty * price; const aps = totalACB / shares; const dACB = r2(aps * qty); gainLoss = r2(r2(proceeds - commission) - dACB); totalACB = r2(totalACB - dACB); shares -= qty; txProceeds = r2(proceeds); txDispositionACB = dACB; txOutlays = r2(commission); } break;
       case "ROC": totalACB = r2(totalACB - amount); if (totalACB < 0) { gainLoss = r2(-totalACB); note = "Excess ROC → gain"; totalACB = 0; } break;
       case "REINVESTED_DIST": { const cost = amount || qty * price; totalACB = r2(totalACB + cost + commission); shares += qty; note = "DRIP"; break; }
       case "CAPITAL_GAINS_DIST": totalACB = r2(totalACB + amount); note = "Cap gains → ACB"; break;
@@ -38,7 +40,7 @@ function computeACB(transactions) {
       case "SUPERFICIAL_LOSS": totalACB = r2(totalACB + amount); note = "Denied loss → ACB"; break;
       case "ACB_ADJUSTMENT": totalACB = r2(totalACB + amount); if (totalACB < 0) { gainLoss = r2(-totalACB); totalACB = 0; } break;
     }
-    rows.push({ ...tx, runningShares: shares, runningACB: totalACB, acbPerShare: shares > 0 ? r2(totalACB / shares) : 0, gainLoss, note: tx.note || note });
+    rows.push({ ...tx, runningShares: shares, runningACB: totalACB, acbPerShare: shares > 0 ? r2(totalACB / shares) : 0, gainLoss, proceeds: txProceeds, dispositionACB: txDispositionACB, outlays: txOutlays, note: tx.note || note });
   }
   return { rows, totalShares: shares, totalACB, acbPerShare: shares > 0 ? r2(totalACB / shares) : 0 };
 }
@@ -128,16 +130,77 @@ function importACBca(csvText, existing) {
   }
   return portfolios;
 }
-function generateCapGainsReport(portfolios, year) {
+function generateCapGainsReport(holdings, year) {
   const allRows = [];
-  for (const p of portfolios) for (const sym of Object.keys(p.holdings)) {
-    const { rows } = computeACB(p.holdings[sym]);
+  for (const sym of Object.keys(holdings)) {
+    const { rows } = computeACB(holdings[sym]);
+    // Find earliest acquisition date for this symbol
+    const firstBuy = rows.find(r => r.type === "BUY" || r.type === "REINVESTED_DIST");
+    const acqYear = firstBuy ? firstBuy.date.slice(0, 4) : "";
     for (const r of rows) if (r.gainLoss != null && r.date.startsWith(String(year)))
-      allRows.push({ portfolio: p.name, symbol: sym, date: r.date, type: r.type, gainLoss: r.gainLoss, shares: r.shares, price: r.pricePerShare, note: r.note });
+      allRows.push({ symbol: sym, date: r.date, type: r.type, shares: r.shares, proceeds: r.proceeds, dispositionACB: r.dispositionACB, outlays: r.outlays, gainLoss: r.gainLoss, acquisitionYear: acqYear, note: r.note });
   }
   const g = r2(allRows.filter(r => r.gainLoss > 0).reduce((s, r) => s + r.gainLoss, 0));
   const l = r2(allRows.filter(r => r.gainLoss < 0).reduce((s, r) => s + r.gainLoss, 0));
-  return { rows: allRows, totalGains: g, totalLosses: l, net: r2(g + l) };
+  const tProceeds = r2(allRows.reduce((s, r) => s + (r.proceeds || 0), 0));
+  const tACB = r2(allRows.reduce((s, r) => s + (r.dispositionACB || 0), 0));
+  const tOutlays = r2(allRows.reduce((s, r) => s + (r.outlays || 0), 0));
+  return { rows: allRows, totalGains: g, totalLosses: l, net: r2(g + l), totalProceeds: tProceeds, totalACB: tACB, totalOutlays: tOutlays };
+}
+
+function exportSchedule3PDF(report, portfolioName, year) {
+  const doc = new jsPDF();
+  doc.setFontSize(16);
+  doc.text("Schedule 3 \u2014 Capital Gains (Losses)", 14, 15);
+  doc.setFontSize(11);
+  doc.text(`Portfolio: ${portfolioName}`, 14, 23);
+  doc.text(`Tax Year: ${year}`, 14, 29);
+  doc.setFontSize(9);
+  doc.text("Publicly traded shares, mutual fund units, and other shares", 14, 35);
+
+  const f = (n) => n != null ? `$${Number(n).toFixed(2)}` : "";
+
+  autoTable(doc, {
+    startY: 40,
+    head: [["Description", "Year\nAcquired", "Proceeds of\nDisposition", "Adjusted\nCost Base", "Outlays &\nExpenses", "Gain (Loss)"]],
+    body: report.rows.map(r => [
+      shortSym(r.symbol, 30),
+      r.acquisitionYear || "",
+      f(r.proceeds),
+      f(r.dispositionACB),
+      f(r.outlays),
+      f(r.gainLoss),
+    ]),
+    foot: [["Totals", "", f(report.totalProceeds), f(report.totalACB), f(report.totalOutlays), f(report.net)]],
+    headStyles: { fillColor: [30, 41, 59], textColor: 255, fontSize: 8, fontStyle: "bold" },
+    footStyles: { fillColor: [30, 41, 59], textColor: 255, fontSize: 9, fontStyle: "bold" },
+    bodyStyles: { fontSize: 8 },
+    columnStyles: {
+      0: { cellWidth: 50 },
+      1: { cellWidth: 18, halign: "center" },
+      2: { cellWidth: 28, halign: "right" },
+      3: { cellWidth: 28, halign: "right" },
+      4: { cellWidth: 24, halign: "right" },
+      5: { cellWidth: 28, halign: "right" },
+    },
+    margin: { left: 14, right: 14 },
+    didDrawPage: () => {
+      doc.setFontSize(8);
+      doc.setTextColor(150);
+      doc.text("Generated by ACB Tracker", 14, doc.internal.pageSize.height - 10);
+    },
+  });
+
+  // Summary below table
+  const finalY = doc.lastAutoTable.finalY + 10;
+  doc.setFontSize(10);
+  doc.setTextColor(0);
+  doc.text(`Total Gains: ${f(report.totalGains)}`, 14, finalY);
+  doc.text(`Total Losses: ${f(report.totalLosses)}`, 14, finalY + 6);
+  doc.text(`Net Capital Gains (Losses): ${f(report.net)}`, 14, finalY + 12);
+  doc.text(`Taxable Capital Gains (50%): ${f(r2(Math.max(0, report.net) * 0.5))}`, 14, finalY + 18);
+
+  doc.save(`schedule3_${portfolioName.replace(/\s+/g, "_")}_${year}.pdf`);
 }
 
 async function fetchETFDistributions(symbol, year) {
@@ -344,13 +407,13 @@ export default function ACBTracker() {
   const handleImport = () => { try { const fn = isACBcaFormat(importText) ? importACBca : importCSV; save(fn(importText, portfolios)); setImportMsg("Imported!"); setImportText(""); setTimeout(() => setImportMsg(""), 3000); } catch (e) { setImportMsg("Error: " + e.message); } };
   const handleFileImport = (e) => { const f = e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = (ev) => setImportText(ev.target.result); r.readAsText(f); };
 
-  const report = useMemo(() => generateCapGainsReport(portfolios, reportYear), [portfolios, reportYear]);
+  const report = useMemo(() => generateCapGainsReport(portfolio.holdings, reportYear), [portfolio, reportYear]);
   const acbData = activeSym && portfolio.holdings[activeSym] ? computeACB(portfolio.holdings[activeSym]) : null;
 
   const handleExportReport = () => {
-    const rows = report.rows.map(r => ({ portfolio: r.portfolio, symbol: r.symbol, date: r.date, type: r.type, shares: r.shares, price: r.price, gainLoss: r.gainLoss?.toFixed(2), note: r.note }));
-    rows.push({}); rows.push({ portfolio: "SUMMARY", type: "Total Gains", gainLoss: report.totalGains.toFixed(2) }); rows.push({ type: "Total Losses", gainLoss: report.totalLosses.toFixed(2) }); rows.push({ type: "Net", gainLoss: report.net.toFixed(2) });
-    const c = Papa.unparse(rows); const b = new Blob([c], { type: "text/csv" }); const u = URL.createObjectURL(b); const a = document.createElement("a"); a.href = u; a.download = `capgains_${reportYear}.csv`; a.click(); URL.revokeObjectURL(u);
+    const rows = report.rows.map(r => ({ Description: r.symbol, Date: r.date, "Year Acquired": r.acquisitionYear, "Proceeds of Disposition": r.proceeds?.toFixed(2), "Adjusted Cost Base": r.dispositionACB?.toFixed(2), "Outlays & Expenses": r.outlays?.toFixed(2), "Gain (Loss)": r.gainLoss?.toFixed(2), Note: r.note }));
+    rows.push({}); rows.push({ Description: "TOTALS", "Proceeds of Disposition": report.totalProceeds.toFixed(2), "Adjusted Cost Base": report.totalACB.toFixed(2), "Outlays & Expenses": report.totalOutlays.toFixed(2), "Gain (Loss)": report.net.toFixed(2) }); rows.push({ Description: "Total Gains", "Gain (Loss)": report.totalGains.toFixed(2) }); rows.push({ Description: "Total Losses", "Gain (Loss)": report.totalLosses.toFixed(2) }); rows.push({ Description: "Taxable Capital Gains (50%)", "Gain (Loss)": (Math.max(0, report.net) * 0.5).toFixed(2) });
+    const c = Papa.unparse(rows); const b = new Blob([c], { type: "text/csv" }); const u = URL.createObjectURL(b); const a = document.createElement("a"); a.href = u; a.download = `schedule3_${portfolio.name.replace(/\s+/g, "_")}_${reportYear}.csv`; a.click(); URL.revokeObjectURL(u);
   };
 
   return (
@@ -478,8 +541,11 @@ export default function ACBTracker() {
         {/* ─── REPORT ─── */}
         {view === "report" && (
           <div>
-            <div style={{ ...S.row, marginBottom: 12 }}>
-              <div style={{ fontSize: 16, fontWeight: 600, color: "#fff" }}>Capital Gains Report</div>
+            <div style={{ ...S.row, marginBottom: 8 }}>
+              <div>
+                <div style={{ fontSize: 16, fontWeight: 600, color: "#fff" }}>Schedule 3 — Capital Gains</div>
+                <div style={{ fontSize: 12, color: "#6b7280" }}>{portfolio.name}</div>
+              </div>
               <select value={reportYear} onChange={e => setReportYear(Number(e.target.value))} style={{ ...S.select, width: "auto", padding: "6px 10px", fontSize: 14 }}>
                 {Array.from({ length: 10 }, (_, i) => new Date().getFullYear() - i).map(y => <option key={y} value={y}>{y}</option>)}
               </select>
@@ -489,16 +555,38 @@ export default function ACBTracker() {
               <div style={S.stat}><div style={S.statLabel}>Losses</div><div style={{ ...S.statVal, fontSize: 16, color: "#f87171" }}>{fmt(report.totalLosses)}</div></div>
               <div style={S.stat}><div style={S.statLabel}>Net</div><div style={{ ...S.statVal, fontSize: 16, color: report.net >= 0 ? "#34d399" : "#f87171" }}>{fmt(report.net)}</div></div>
             </div>
-            {report.rows.length > 0 && <button onClick={handleExportReport} style={{ ...S.btn("#059669"), marginBottom: 12 }}>Export Report CSV</button>}
-            {report.rows.length > 0 ? report.rows.map((r, i) => (
-              <div key={i} style={S.txCard}>
-                <div style={S.row}>
-                  <div><span style={{ color: "#fff", fontWeight: 600 }}>{shortSym(r.symbol)}</span><span style={{ color: "#6b7280", fontSize: 12, marginLeft: 6 }}>{r.portfolio}</span></div>
-                  <span style={{ color: r.gainLoss >= 0 ? "#34d399" : "#f87171", fontWeight: 700, fontSize: 15 }}>{fmt(r.gainLoss)}</span>
-                </div>
-                <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>{r.date} · {txLabel(r.type)}{r.note ? ` · ${r.note}` : ""}</div>
+            {report.rows.length > 0 && (
+              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                <button onClick={handleExportReport} style={{ ...S.btn("#059669"), flex: 1 }}>Export CSV</button>
+                <button onClick={() => exportSchedule3PDF(report, portfolio.name, reportYear)} style={{ ...S.btn("#7c3aed"), flex: 1 }}>Export PDF</button>
               </div>
-            )) : <div style={{ textAlign: "center", padding: 32, color: "#6b7280" }}>No gains/losses for {reportYear}</div>}
+            )}
+            {report.rows.length > 0 ? (
+              <div>
+                {/* Table header */}
+                <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1.5fr 1.5fr 1fr 1.5fr", gap: 4, padding: "8px 12px", background: "#252d3d", borderRadius: "10px 10px 0 0", fontSize: 10, fontWeight: 600, color: "#9ca3af" }}>
+                  <div>Description</div><div style={{ textAlign: "center" }}>Yr Acq</div><div style={{ textAlign: "right" }}>Proceeds</div><div style={{ textAlign: "right" }}>ACB</div><div style={{ textAlign: "right" }}>Expenses</div><div style={{ textAlign: "right" }}>Gain/Loss</div>
+                </div>
+                {report.rows.map((r, i) => (
+                  <div key={i} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1.5fr 1.5fr 1fr 1.5fr", gap: 4, padding: "8px 12px", background: i % 2 === 0 ? "#141820" : "#1a1f2e", borderBottom: "1px solid #2d3548", fontSize: 12 }}>
+                    <div style={{ color: "#fff", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.symbol}>{shortSym(r.symbol, 18)}</div>
+                    <div style={{ textAlign: "center", color: "#9ca3af" }}>{r.acquisitionYear}</div>
+                    <div style={{ textAlign: "right", color: "#d1d5db" }}>{fmt(r.proceeds)}</div>
+                    <div style={{ textAlign: "right", color: "#d1d5db" }}>{fmt(r.dispositionACB)}</div>
+                    <div style={{ textAlign: "right", color: "#d1d5db" }}>{fmt(r.outlays)}</div>
+                    <div style={{ textAlign: "right", fontWeight: 600, color: r.gainLoss >= 0 ? "#34d399" : "#f87171" }}>{fmt(r.gainLoss)}</div>
+                  </div>
+                ))}
+                {/* Totals row */}
+                <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1.5fr 1.5fr 1fr 1.5fr", gap: 4, padding: "8px 12px", background: "#252d3d", borderRadius: "0 0 10px 10px", fontSize: 12, fontWeight: 700, color: "#fff" }}>
+                  <div>Totals</div><div /><div style={{ textAlign: "right" }}>{fmt(report.totalProceeds)}</div><div style={{ textAlign: "right" }}>{fmt(report.totalACB)}</div><div style={{ textAlign: "right" }}>{fmt(report.totalOutlays)}</div><div style={{ textAlign: "right", color: report.net >= 0 ? "#34d399" : "#f87171" }}>{fmt(report.net)}</div>
+                </div>
+                <div style={{ ...S.card, marginTop: 12, fontSize: 13 }}>
+                  <div style={{ color: "#9ca3af" }}>Taxable Capital Gains (50% inclusion)</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: "#fff", marginTop: 4 }}>{fmt(r2(Math.max(0, report.net) * 0.5))}</div>
+                </div>
+              </div>
+            ) : <div style={{ textAlign: "center", padding: 32, color: "#6b7280" }}>No dispositions for {reportYear}</div>}
           </div>
         )}
 
