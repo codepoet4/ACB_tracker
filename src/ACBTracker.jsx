@@ -504,7 +504,7 @@ export default function ACBTracker() {
             </div>
             <div style={S.card}>
               <div style={{ fontSize: 15, fontWeight: 600, color: "#fff", marginBottom: 8 }}>Import CSV</div>
-              <label style={{ ...S.btn("#3b82f6"), display: "block", textAlign: "center", marginBottom: 10 }}>
+              <label style={{ ...S.btn("#3b82f6"), display: "block", textAlign: "center", boxSizing: "border-box", marginBottom: 10 }}>
                 Choose File<input type="file" accept=".csv,.txt" onChange={handleFileImport} style={{ display: "none" }} />
               </label>
               <textarea value={importText} onChange={e => setImportText(e.target.value)} rows={4} style={{ ...S.input, fontFamily: "monospace", fontSize: 13 }} placeholder="Or paste CSV here..." />
