@@ -61,6 +61,71 @@ function importCSV(csvText, existing) {
   }
   return portfolios;
 }
+// ─── AdjustedCostBase.ca CSV Import ───
+const ACB_MONTHS = { Jan:"01", Feb:"02", Mar:"03", Apr:"04", May:"05", Jun:"06", Jul:"07", Aug:"08", Sep:"09", Oct:"10", Nov:"11", Dec:"12" };
+function convertACBDate(d) { const m = (d||"").match(/^(\d{4})-(\w{3})-(\d{2})$/); return m ? `${m[1]}-${ACB_MONTHS[m[2]]||"01"}-${m[3]}` : d||today(); }
+function isACBcaFormat(text) { return (text.split(/\r?\n/)[0]||"").includes("Adjusted Cost Base and Capital Gains Report"); }
+function importACBca(csvText, existing) {
+  const lines = csvText.split(/\r?\n/);
+  // Extract portfolio name
+  let portfolioName = "Imported";
+  for (let i = 0; i < Math.min(10, lines.length); i++) {
+    const m = lines[i].match(/Portfolio:\s*([^"]+)/);
+    if (m) { portfolioName = m[1].trim(); break; }
+  }
+  // Find section boundaries
+  let summaryStart = -1, txStart = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].indexOf('"Name","Ticker"') === 0 && summaryStart < 0) summaryStart = i;
+    if (lines[i].indexOf('"Security","Date","Transaction"') === 0) txStart = i;
+  }
+  if (txStart < 0) throw new Error("No transaction table found in AdjustedCostBase.ca CSV");
+  // Build name→ticker lookup from summary
+  const nameToTicker = {};
+  if (summaryStart >= 0) {
+    const sumRows = Papa.parse(lines.slice(summaryStart, txStart).join("\n"), { header: true, skipEmptyLines: true }).data;
+    for (const r of sumRows) {
+      const name = (r["Name"]||"").trim(), tick = (r["Ticker"]||"").trim().toUpperCase();
+      if (name && tick) nameToTicker[name] = tick;
+    }
+  }
+  const resolveTicker = (name) => {
+    let t = nameToTicker[name] || "";
+    t = t.replace(/\?$/, "").trim().toUpperCase();
+    return t || name.replace(/[^A-Za-z0-9.]/g, "").toUpperCase() || "UNKNOWN";
+  };
+  // Parse transactions
+  const txRows = Papa.parse(lines.slice(txStart).join("\n"), { header: true, skipEmptyLines: true }).data;
+  const portfolios = [...existing]; const pMap = {};
+  portfolios.forEach((p, i) => { pMap[p.name.toLowerCase()] = i; });
+  for (const row of txRows) {
+    const sec = (row["Security"]||"").trim();
+    if (!sec || sec.startsWith("Total") || sec.startsWith("Grand")) continue;
+    const ticker = resolveTicker(sec);
+    const rawType = (row["Transaction"]||"").trim();
+    const date = convertACBDate((row["Date"]||"").trim());
+    const amount = parseFloat(row["Amount"]) || 0;
+    const shares = parseFloat(row["Shares"]) || 0;
+    const aps = parseFloat(row["Amount/Share"]) || 0;
+    const comm = parseFloat(row["Commission"]) || 0;
+    const dacb = parseFloat(row["Change in ACB"]) || 0;
+    const memo = (row["Memo"]||"").trim();
+    let type, tShares = "", tPrice = "", tComm = "0", tAmt = "";
+    switch (rawType) {
+      case "Buy": type = "BUY"; tShares = shares; tPrice = aps; tComm = comm; break;
+      case "Sell": type = "SELL"; tShares = shares; tPrice = aps; tComm = comm; break;
+      case "Return of Capital": type = "ROC"; tAmt = Math.abs(amount); break;
+      case "Reinvested Cap. Gain Dist.": type = "CAPITAL_GAINS_DIST"; tAmt = Math.abs(dacb); break;
+      case "Capital Gains Dividend": type = "CAPITAL_GAINS_DIST"; tAmt = Math.abs(dacb); break;
+      default: type = "ACB_ADJUSTMENT"; tAmt = dacb; break;
+    }
+    let pIdx = pMap[portfolioName.toLowerCase()];
+    if (pIdx === undefined) { pIdx = portfolios.length; portfolios.push({ id: uid(), name: portfolioName, holdings: {} }); pMap[portfolioName.toLowerCase()] = pIdx; }
+    if (!portfolios[pIdx].holdings[ticker]) portfolios[pIdx].holdings[ticker] = [];
+    portfolios[pIdx].holdings[ticker].push({ id: uid(), _order: portfolios[pIdx].holdings[ticker].length, date, type, shares: tShares, pricePerShare: tPrice, commission: tComm, amount: tAmt, note: memo || `ACB.ca: ${rawType}` });
+  }
+  return portfolios;
+}
 function generateCapGainsReport(portfolios, year) {
   const allRows = [];
   for (const p of portfolios) for (const sym of Object.keys(p.holdings)) {
@@ -273,7 +338,7 @@ export default function ACBTracker() {
   const addETFTxs = (txs) => { const u = [...portfolios]; const ex = [...(portfolio.holdings[activeSym] || [])]; for (const t of txs) ex.push({ ...t, _order: ex.length }); u[activePIdx] = { ...portfolio, holdings: { ...portfolio.holdings, [activeSym]: ex } }; save(u); setShowETF(false); };
 
   const handleExport = () => { const c = exportCSV(portfolios); const b = new Blob([c], { type: "text/csv" }); const u = URL.createObjectURL(b); const a = document.createElement("a"); a.href = u; a.download = `acb_${today()}.csv`; a.click(); URL.revokeObjectURL(u); };
-  const handleImport = () => { try { save(importCSV(importText, portfolios)); setImportMsg("Imported!"); setImportText(""); setTimeout(() => setImportMsg(""), 3000); } catch (e) { setImportMsg("Error: " + e.message); } };
+  const handleImport = () => { try { const fn = isACBcaFormat(importText) ? importACBca : importCSV; save(fn(importText, portfolios)); setImportMsg("Imported!"); setImportText(""); setTimeout(() => setImportMsg(""), 3000); } catch (e) { setImportMsg("Error: " + e.message); } };
   const handleFileImport = (e) => { const f = e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = (ev) => setImportText(ev.target.result); r.readAsText(f); };
 
   const report = useMemo(() => generateCapGainsReport(portfolios, reportYear), [portfolios, reportYear]);
