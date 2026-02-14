@@ -3,7 +3,7 @@ import * as Papa from "papaparse";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.1.0";
 const uid = () => Math.random().toString(36).slice(2, 10);
 const r2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 const fmt = (n) => (n == null || isNaN(n)) ? "$0.00" : `$${Number(n).toLocaleString("en-CA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -202,7 +202,7 @@ function exportSchedule3PDF(report, portfolioName, year) {
   doc.text(`Total Gains: ${f(report.totalGains)}`, 14, finalY);
   doc.text(`Total Losses: ${f(report.totalLosses)}`, 14, finalY + 6);
   doc.text(`Net Capital Gains (Losses): ${f(report.net)}`, 14, finalY + 12);
-  doc.text(`Taxable Capital Gains (50%): ${f(r2(Math.max(0, report.net) * 0.5))}`, 14, finalY + 18);
+  doc.text(`Taxable Capital Gains / Losses (50%): ${f(r2(report.net * 0.5))}`, 14, finalY + 18);
 
   doc.save(`schedule3_${portfolioName.replace(/\s+/g, "_")}_${year}.pdf`);
 }
@@ -416,7 +416,7 @@ export default function ACBTracker() {
 
   const handleExportReport = () => {
     const rows = report.rows.map(r => ({ Description: r.symbol, Date: r.date, "Year Acquired": r.acquisitionYear, "Proceeds of Disposition": r.proceeds?.toFixed(2), "Adjusted Cost Base": r.dispositionACB?.toFixed(2), "Outlays & Expenses": r.outlays?.toFixed(2), "Gain (Loss)": r.gainLoss?.toFixed(2), Note: r.note }));
-    rows.push({}); rows.push({ Description: "TOTALS", "Proceeds of Disposition": report.totalProceeds.toFixed(2), "Adjusted Cost Base": report.totalACB.toFixed(2), "Outlays & Expenses": report.totalOutlays.toFixed(2), "Gain (Loss)": report.net.toFixed(2) }); rows.push({ Description: "Total Gains", "Gain (Loss)": report.totalGains.toFixed(2) }); rows.push({ Description: "Total Losses", "Gain (Loss)": report.totalLosses.toFixed(2) }); rows.push({ Description: "Taxable Capital Gains (50%)", "Gain (Loss)": (Math.max(0, report.net) * 0.5).toFixed(2) });
+    rows.push({}); rows.push({ Description: "TOTALS", "Proceeds of Disposition": report.totalProceeds.toFixed(2), "Adjusted Cost Base": report.totalACB.toFixed(2), "Outlays & Expenses": report.totalOutlays.toFixed(2), "Gain (Loss)": report.net.toFixed(2) }); rows.push({ Description: "Total Gains", "Gain (Loss)": report.totalGains.toFixed(2) }); rows.push({ Description: "Total Losses", "Gain (Loss)": report.totalLosses.toFixed(2) }); rows.push({ Description: "Taxable Capital Gains / Losses (50%)", "Gain (Loss)": (report.net * 0.5).toFixed(2) });
     const c = Papa.unparse(rows); const b = new Blob([c], { type: "text/csv" }); const u = URL.createObjectURL(b); const a = document.createElement("a"); a.href = u; a.download = `schedule3_${portfolio.name.replace(/\s+/g, "_")}_${reportYear}.csv`; a.click(); URL.revokeObjectURL(u);
   };
 
@@ -590,8 +590,8 @@ export default function ACBTracker() {
                   <div>Totals</div><div /><div style={{ textAlign: "right" }}>{fmt(report.totalProceeds)}</div><div style={{ textAlign: "right" }}>{fmt(report.totalACB)}</div><div style={{ textAlign: "right" }}>{fmt(report.totalOutlays)}</div><div style={{ textAlign: "right", color: report.net >= 0 ? "#34d399" : "#f87171" }}>{fmt(report.net)}</div>
                 </div>
                 <div style={{ ...S.card, marginTop: 12, fontSize: 13 }}>
-                  <div style={{ color: "#9ca3af" }}>Taxable Capital Gains (50% inclusion)</div>
-                  <div style={{ fontSize: 18, fontWeight: 700, color: "#fff", marginTop: 4 }}>{fmt(r2(Math.max(0, report.net) * 0.5))}</div>
+                  <div style={{ color: "#9ca3af" }}>Taxable Capital Gains / Losses (50% inclusion)</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: report.net >= 0 ? "#34d399" : "#f87171", marginTop: 4 }}>{fmt(r2(report.net * 0.5))}</div>
                 </div>
               </div>
             ) : <div style={{ textAlign: "center", padding: 32, color: "#6b7280" }}>No dispositions for {reportYear}</div>}
