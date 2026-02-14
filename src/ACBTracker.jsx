@@ -263,7 +263,7 @@ function Sheet({ open, onClose, title, children }) {
 function TxForm({ tx, onChange, onSave, onCancel, isEdit }) {
   const needsShares = ["BUY","SELL","REINVESTED_DIST","STOCK_SPLIT"].includes(tx.type);
   const needsPrice = ["BUY","SELL","REINVESTED_DIST"].includes(tx.type);
-  const needsAmount = ["ROC","SUPERFICIAL_LOSS","ACB_ADJUSTMENT","CAPITAL_GAINS_DIST"].includes(tx.type);
+  const needsAmount = ["BUY","SELL","ROC","REINVESTED_DIST","SUPERFICIAL_LOSS","ACB_ADJUSTMENT","CAPITAL_GAINS_DIST"].includes(tx.type);
   const needsComm = ["BUY","SELL","REINVESTED_DIST"].includes(tx.type);
   return (
     <div>
