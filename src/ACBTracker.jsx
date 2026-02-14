@@ -313,8 +313,8 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
 
   const buildProposed = (nonCashPerUnit, rocPerUnit, recordDate, source) => {
     const txs = [], d = recordDate || `${selectedYear}-12-31`;
-    if (nonCashPerUnit > 0) txs.push({ id: uid(), date: d, type: "CAPITAL_GAINS_DIST", shares: "", pricePerShare: "", commission: "0", amount: r2(nonCashPerUnit * sharesAtYearEnd), note: `[${source} ${selectedYear}] Non-cash dist $${nonCashPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: nonCashPerUnit, _comp: "Non-Cash Dist." });
-    if (rocPerUnit > 0) txs.push({ id: uid(), date: d, type: "ROC", shares: "", pricePerShare: "", commission: "0", amount: r2(rocPerUnit * sharesAtYearEnd), note: `[${source} ${selectedYear}] ROC $${rocPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: rocPerUnit, _comp: "Return of Capital" });
+    if (nonCashPerUnit > 0) txs.push({ id: uid(), date: d, type: "CAPITAL_GAINS_DIST", shares: sharesAtYearEnd, pricePerShare: nonCashPerUnit, commission: "0", amount: r2(nonCashPerUnit * sharesAtYearEnd), note: `[${source} ${selectedYear}] Non-cash dist $${nonCashPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: nonCashPerUnit, _comp: "Non-Cash Dist." });
+    if (rocPerUnit > 0) txs.push({ id: uid(), date: d, type: "ROC", shares: sharesAtYearEnd, pricePerShare: rocPerUnit, commission: "0", amount: r2(rocPerUnit * sharesAtYearEnd), note: `[${source} ${selectedYear}] ROC $${rocPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: rocPerUnit, _comp: "Return of Capital" });
     return txs;
   };
 
