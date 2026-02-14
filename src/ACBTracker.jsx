@@ -274,7 +274,7 @@ function TxForm({ tx, onChange, onSave, onCancel, isEdit }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
         {needsShares && <div><label style={S.label}>{tx.type === "STOCK_SPLIT" ? "Multiplier" : "Shares"}</label><input type="number" inputMode="decimal" step="any" value={tx.shares} onChange={e => onChange({ ...tx, shares: e.target.value })} style={S.input} placeholder="0" /></div>}
         {needsPrice && <div><label style={S.label}>Price/Share</label><input type="number" inputMode="decimal" step="any" value={tx.pricePerShare} onChange={e => onChange({ ...tx, pricePerShare: e.target.value })} style={S.input} placeholder="0.00" /></div>}
-        {needsAmount && <div><label style={S.label}>Amount ($)</label><input type="number" inputMode="decimal" step="any" value={tx.amount} onChange={e => onChange({ ...tx, amount: e.target.value })} style={S.input} placeholder="0.00" /></div>}
+        {needsAmount && <div><label style={S.label}>Amount ($)</label><input type="text" inputMode="decimal" value={tx.amount} onChange={e => { const v = e.target.value; if (v === "" || /^\d*\.?\d{0,2}$/.test(v)) onChange({ ...tx, amount: v }); }} onBlur={e => { const n = parseFloat(e.target.value); if (!isNaN(n)) onChange({ ...tx, amount: n.toFixed(2) }); }} style={S.input} placeholder="0.00" /></div>}
         {needsComm && <div><label style={S.label}>Commission</label><input type="number" inputMode="decimal" step="any" value={tx.commission} onChange={e => onChange({ ...tx, commission: e.target.value })} style={S.input} placeholder="0.00" /></div>}
         {!needsShares && !needsAmount && <div />}
         {!needsPrice && !needsComm && <div />}
