@@ -7,6 +7,7 @@ const APP_VERSION = "1.2.0";
 const uid = () => Math.random().toString(36).slice(2, 10);
 const r2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 const fmt = (n) => (n == null || isNaN(n)) ? "$0.00" : `$${Number(n).toLocaleString("en-CA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const fmtPrice = (n) => { const v = Number(n); if (n == null || isNaN(v)) return "$0.00"; const d = Math.abs(v) < 1 ? 5 : 2; return `$${v.toLocaleString("en-CA", { minimumFractionDigits: d, maximumFractionDigits: d })}`; };
 const shortSym = (s, max = 24) => s && s.length > max ? s.slice(0, max) + "\u2026" : s;
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -273,7 +274,7 @@ function TxForm({ tx, onChange, onSave, onCancel, isEdit }) {
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
         {needsShares && <div><label style={S.label}>{tx.type === "STOCK_SPLIT" ? "Multiplier" : "Shares"}</label><input type="number" inputMode="decimal" step="any" value={tx.shares} onChange={e => onChange({ ...tx, shares: e.target.value })} style={S.input} placeholder="0" /></div>}
-        {needsPrice && <div><label style={S.label}>Price/Share</label><input type="text" inputMode="decimal" value={tx.pricePerShare} onChange={e => { const v = e.target.value; if (v === "" || /^\d*\.?\d{0,2}$/.test(v)) onChange({ ...tx, pricePerShare: v }); }} onBlur={e => { const n = parseFloat(e.target.value); if (!isNaN(n)) onChange({ ...tx, pricePerShare: n.toFixed(2) }); }} style={S.input} placeholder="0.00" /></div>}
+        {needsPrice && <div><label style={S.label}>Price/Share</label><input type="text" inputMode="decimal" value={tx.pricePerShare} onChange={e => { const v = e.target.value; if (v === "" || /^\d*\.?\d{0,5}$/.test(v)) onChange({ ...tx, pricePerShare: v }); }} onBlur={e => { const n = parseFloat(e.target.value); if (!isNaN(n)) { const d = Math.abs(n) < 1 ? 5 : 2; onChange({ ...tx, pricePerShare: n.toFixed(d) }); } }} style={S.input} placeholder="0.00" /></div>}
         {needsAmount && <div><label style={S.label}>Amount ($)</label><input type="text" inputMode="decimal" value={tx.amount} onChange={e => { const v = e.target.value; if (v === "" || /^\d*\.?\d{0,2}$/.test(v)) onChange({ ...tx, amount: v }); }} onBlur={e => { const n = parseFloat(e.target.value); if (!isNaN(n)) onChange({ ...tx, amount: n.toFixed(2) }); }} style={S.input} placeholder="0.00" /></div>}
         {needsComm && <div><label style={S.label}>Commission</label><input type="text" inputMode="decimal" value={tx.commission} onChange={e => { const v = e.target.value; if (v === "" || /^\d*\.?\d{0,2}$/.test(v)) onChange({ ...tx, commission: v }); }} onBlur={e => { const n = parseFloat(e.target.value); if (!isNaN(n)) onChange({ ...tx, commission: n.toFixed(2) }); }} style={S.input} placeholder="0.00" /></div>}
         {!needsShares && !needsAmount && <div />}
@@ -559,13 +560,13 @@ export default function ACBTracker() {
                         <span style={{ color: "#6b7280", fontSize: 12, marginLeft: 8 }}>{r.date}</span>
                       </div>
                       <div style={{ display: "flex", gap: 8 }}>
-                        <button onClick={() => { const f2 = v => (v != null && v !== "" && !isNaN(v)) ? Number(v).toFixed(2) : v; const f = { ...r, amount: f2(r.amount), pricePerShare: f2(r.pricePerShare), commission: f2(r.commission) }; setTxForm(f); setEditTx(r); setShowAddTx(true); }} style={{ background: "none", border: "none", color: "#60a5fa", fontSize: 13, cursor: "pointer" }}>Edit</button>
+                        <button onClick={() => { const f2 = v => (v != null && v !== "" && !isNaN(v)) ? Number(v).toFixed(2) : v; const fp = v => { const n = Number(v); if (v == null || v === "" || isNaN(n)) return v; return n.toFixed(Math.abs(n) < 1 ? 5 : 2); }; const f = { ...r, amount: f2(r.amount), pricePerShare: fp(r.pricePerShare), commission: f2(r.commission) }; setTxForm(f); setEditTx(r); setShowAddTx(true); }} style={{ background: "none", border: "none", color: "#60a5fa", fontSize: 13, cursor: "pointer" }}>Edit</button>
                         <button onClick={() => deleteTx(r.id)} style={{ background: "none", border: "none", color: "#f87171", fontSize: 13, cursor: "pointer" }}>Del</button>
                       </div>
                     </div>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, marginTop: 6, fontSize: 13 }}>
                       {r.shares != null && <div style={{ color: "#9ca3af" }}>Shares: <span style={{ color: "#fff" }}>{r.shares}</span></div>}
-                      <div style={{ color: "#9ca3af" }}>Price: <span style={{ color: "#fff" }}>{fmt(r.pricePerShare)}</span></div>
+                      <div style={{ color: "#9ca3af" }}>Price: <span style={{ color: "#fff" }}>{fmtPrice(r.pricePerShare)}</span></div>
                       <div style={{ color: "#9ca3af" }}>Amount: <span style={{ color: "#fff" }}>{fmt(r.amount)}</span></div>
                       <div style={{ color: "#9ca3af" }}>Comm: <span style={{ color: "#fff" }}>{fmt(r.commission)}</span></div>
                     </div>
@@ -573,7 +574,7 @@ export default function ACBTracker() {
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 4, fontSize: 12 }}>
                       <div style={{ color: "#6b7280" }}>Sh: <span style={{ color: "#d1d5db" }}>{r.runningShares.toLocaleString("en-CA", { maximumFractionDigits: 4 })}</span></div>
                       <div style={{ color: "#6b7280" }}>ACB: <span style={{ color: "#d1d5db" }}>{fmt(r.runningACB)}</span></div>
-                      <div style={{ color: "#6b7280" }}>ACB/s: <span style={{ color: "#d1d5db" }}>{fmt(r.acbPerShare)}</span></div>
+                      <div style={{ color: "#6b7280" }}>ACB/s: <span style={{ color: "#d1d5db" }}>{fmtPrice(r.acbPerShare)}</span></div>
                     </div>
                     {r.gainLoss != null && <div style={{ marginTop: 4, fontSize: 14, fontWeight: 600, color: r.gainLoss >= 0 ? "#34d399" : "#f87171" }}>G/L: {fmt(r.gainLoss)}</div>}
                     {r.note && <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.note}</div>}
