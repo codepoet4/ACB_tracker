@@ -33,12 +33,12 @@ function computeACB(transactions) {
     switch (tx.type) {
       case "BUY": { const cost = amount || qty * price; totalACB = r2(totalACB + cost + commission); shares += qty; break; }
       case "SELL": if (shares > 0) { const proceeds = amount || qty * price; const aps = totalACB / shares; const dACB = r2(aps * qty); gainLoss = r2(r2(proceeds - commission) - dACB); totalACB = r2(totalACB - dACB); shares -= qty; txProceeds = r2(proceeds); txDispositionACB = dACB; txOutlays = r2(commission); } break;
-      case "ROC": totalACB = r2(totalACB - amount); if (totalACB < 0) { gainLoss = r2(-totalACB); note = "Excess ROC → gain"; totalACB = 0; } break;
+      case "ROC": { const rocAmt = amount || r2(qty * price); totalACB = r2(totalACB - rocAmt); if (totalACB < 0) { gainLoss = r2(-totalACB); note = "Excess ROC → gain"; totalACB = 0; } break; }
       case "REINVESTED_DIST": { const cost = amount || qty * price; totalACB = r2(totalACB + cost + commission); shares += qty; note = "DRIP"; break; }
-      case "CAPITAL_GAINS_DIST": totalACB = r2(totalACB + amount); note = "Non-cash dist → ACB"; break;
+      case "CAPITAL_GAINS_DIST": { const distAmt = amount || r2(qty * price); totalACB = r2(totalACB + distAmt); note = "Non-cash dist → ACB"; break; }
       case "STOCK_SPLIT": shares *= (qty || 2); note = `Split ${qty || 2}:1`; break;
-      case "SUPERFICIAL_LOSS": totalACB = r2(totalACB + amount); note = "Denied loss → ACB"; break;
-      case "ACB_ADJUSTMENT": totalACB = r2(totalACB + amount); if (totalACB < 0) { gainLoss = r2(-totalACB); totalACB = 0; } break;
+      case "SUPERFICIAL_LOSS": { const slAmt = amount || r2(qty * price); totalACB = r2(totalACB + slAmt); note = "Denied loss → ACB"; break; }
+      case "ACB_ADJUSTMENT": { const adjAmt = amount || r2(qty * price); totalACB = r2(totalACB + adjAmt); if (totalACB < 0) { gainLoss = r2(-totalACB); totalACB = 0; } break; }
     }
     rows.push({ ...tx, runningShares: shares, runningACB: totalACB, acbPerShare: shares > 0 ? r2(totalACB / shares) : 0, gainLoss, proceeds: txProceeds, dispositionACB: txDispositionACB, outlays: txOutlays, note: tx.note || note });
   }
@@ -127,10 +127,10 @@ function importACBca(csvText, existing) {
     } else switch (rawType) {
       case "Buy": type = "BUY"; tShares = shares; tPrice = aps || (shares > 0 ? r2(amount / shares) : 0); tComm = comm; tAmt = amount; break;
       case "Sell": type = "SELL"; tShares = shares; tPrice = aps || (shares > 0 ? r2(amount / shares) : 0); tComm = comm; tAmt = amount; break;
-      case "Return of Capital": type = "ROC"; tAmt = Math.abs(amount); break;
-      case "Reinvested Cap. Gain Dist.": type = "CAPITAL_GAINS_DIST"; tAmt = Math.abs(dacb); break;
-      case "Capital Gains Dividend": type = "CAPITAL_GAINS_DIST"; tAmt = Math.abs(dacb); break;
-      default: type = "ACB_ADJUSTMENT"; tAmt = dacb; break;
+      case "Return of Capital": type = "ROC"; tShares = shares; tPrice = aps || (shares > 0 ? r2(Math.abs(amount) / shares) : 0); tAmt = Math.abs(amount); break;
+      case "Reinvested Cap. Gain Dist.": type = "CAPITAL_GAINS_DIST"; tShares = shares; tPrice = aps || (shares > 0 ? r2(Math.abs(dacb) / shares) : 0); tAmt = Math.abs(dacb); break;
+      case "Capital Gains Dividend": type = "CAPITAL_GAINS_DIST"; tShares = shares; tPrice = aps || (shares > 0 ? r2(Math.abs(dacb) / shares) : 0); tAmt = Math.abs(dacb); break;
+      default: type = "ACB_ADJUSTMENT"; tShares = shares; tPrice = aps; tAmt = dacb; break;
     }
     let pIdx = pMap[portfolioName.toLowerCase()];
     if (pIdx === undefined) { pIdx = portfolios.length; portfolios.push({ id: uid(), name: portfolioName, holdings: {} }); pMap[portfolioName.toLowerCase()] = pIdx; }
@@ -261,8 +261,8 @@ function Sheet({ open, onClose, title, children }) {
 
 // ─── Transaction Form ───
 function TxForm({ tx, onChange, onSave, onCancel, isEdit }) {
-  const needsShares = ["BUY","SELL","REINVESTED_DIST","STOCK_SPLIT"].includes(tx.type);
-  const needsPrice = ["BUY","SELL","REINVESTED_DIST"].includes(tx.type);
+  const needsShares = true;
+  const needsPrice = tx.type !== "STOCK_SPLIT";
   const needsAmount = ["BUY","SELL","ROC","REINVESTED_DIST","SUPERFICIAL_LOSS","ACB_ADJUSTMENT","CAPITAL_GAINS_DIST"].includes(tx.type);
   const needsComm = ["BUY","SELL","REINVESTED_DIST"].includes(tx.type);
   return (
