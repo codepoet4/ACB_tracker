@@ -112,6 +112,7 @@ function importACBca(csvText, existing) {
     const amount = parseFloat(row["Amount"]) || 0;
     const shares = parseFloat(row["Shares"]) || 0;
     const comm = parseFloat(row["Commission"]) || 0;
+    const aps = parseFloat(row["Amount/Share"]) || 0;
     const dacb = parseFloat(row["Change in ACB"]) || 0;
     const memo = (row["Memo"]||"").trim();
     let type, tShares = "", tPrice = "", tComm = "0", tAmt = "";
@@ -124,8 +125,8 @@ function importACBca(csvText, existing) {
         tShares = oldS > 0 ? newS / oldS : 2;
       } else { tShares = shares || 2; }
     } else switch (rawType) {
-      case "Buy": type = "BUY"; tShares = shares; tComm = comm; tAmt = amount; break;
-      case "Sell": type = "SELL"; tShares = shares; tComm = comm; tAmt = amount; break;
+      case "Buy": type = "BUY"; tShares = shares; tPrice = aps || (shares > 0 ? r2(amount / shares) : 0); tComm = comm; tAmt = amount; break;
+      case "Sell": type = "SELL"; tShares = shares; tPrice = aps || (shares > 0 ? r2(amount / shares) : 0); tComm = comm; tAmt = amount; break;
       case "Return of Capital": type = "ROC"; tAmt = Math.abs(amount); break;
       case "Reinvested Cap. Gain Dist.": type = "CAPITAL_GAINS_DIST"; tAmt = Math.abs(dacb); break;
       case "Capital Gains Dividend": type = "CAPITAL_GAINS_DIST"; tAmt = Math.abs(dacb); break;
