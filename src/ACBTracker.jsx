@@ -559,7 +559,7 @@ export default function ACBTracker() {
                         <span style={{ color: "#6b7280", fontSize: 12, marginLeft: 8 }}>{r.date}</span>
                       </div>
                       <div style={{ display: "flex", gap: 8 }}>
-                        <button onClick={() => { setTxForm(r); setEditTx(r); setShowAddTx(true); }} style={{ background: "none", border: "none", color: "#60a5fa", fontSize: 13, cursor: "pointer" }}>Edit</button>
+                        <button onClick={() => { const f = { ...r, amount: (r.amount != null && r.amount !== "" && !isNaN(r.amount)) ? Number(r.amount).toFixed(2) : r.amount }; setTxForm(f); setEditTx(r); setShowAddTx(true); }} style={{ background: "none", border: "none", color: "#60a5fa", fontSize: 13, cursor: "pointer" }}>Edit</button>
                         <button onClick={() => deleteTx(r.id)} style={{ background: "none", border: "none", color: "#f87171", fontSize: 13, cursor: "pointer" }}>Del</button>
                       </div>
                     </div>
