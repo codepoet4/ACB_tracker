@@ -273,9 +273,9 @@ function TxForm({ tx, onChange, onSave, onCancel, isEdit }) {
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
         {needsShares && <div><label style={S.label}>{tx.type === "STOCK_SPLIT" ? "Multiplier" : "Shares"}</label><input type="number" inputMode="decimal" step="any" value={tx.shares} onChange={e => onChange({ ...tx, shares: e.target.value })} style={S.input} placeholder="0" /></div>}
-        {needsPrice && <div><label style={S.label}>Price/Share</label><input type="number" inputMode="decimal" step="any" value={tx.pricePerShare} onChange={e => onChange({ ...tx, pricePerShare: e.target.value })} style={S.input} placeholder="0.00" /></div>}
+        {needsPrice && <div><label style={S.label}>Price/Share</label><input type="text" inputMode="decimal" value={tx.pricePerShare} onChange={e => { const v = e.target.value; if (v === "" || /^\d*\.?\d{0,2}$/.test(v)) onChange({ ...tx, pricePerShare: v }); }} onBlur={e => { const n = parseFloat(e.target.value); if (!isNaN(n)) onChange({ ...tx, pricePerShare: n.toFixed(2) }); }} style={S.input} placeholder="0.00" /></div>}
         {needsAmount && <div><label style={S.label}>Amount ($)</label><input type="text" inputMode="decimal" value={tx.amount} onChange={e => { const v = e.target.value; if (v === "" || /^\d*\.?\d{0,2}$/.test(v)) onChange({ ...tx, amount: v }); }} onBlur={e => { const n = parseFloat(e.target.value); if (!isNaN(n)) onChange({ ...tx, amount: n.toFixed(2) }); }} style={S.input} placeholder="0.00" /></div>}
-        {needsComm && <div><label style={S.label}>Commission</label><input type="number" inputMode="decimal" step="any" value={tx.commission} onChange={e => onChange({ ...tx, commission: e.target.value })} style={S.input} placeholder="0.00" /></div>}
+        {needsComm && <div><label style={S.label}>Commission</label><input type="text" inputMode="decimal" value={tx.commission} onChange={e => { const v = e.target.value; if (v === "" || /^\d*\.?\d{0,2}$/.test(v)) onChange({ ...tx, commission: v }); }} onBlur={e => { const n = parseFloat(e.target.value); if (!isNaN(n)) onChange({ ...tx, commission: n.toFixed(2) }); }} style={S.input} placeholder="0.00" /></div>}
         {!needsShares && !needsAmount && <div />}
         {!needsPrice && !needsComm && <div />}
       </div>
@@ -559,15 +559,15 @@ export default function ACBTracker() {
                         <span style={{ color: "#6b7280", fontSize: 12, marginLeft: 8 }}>{r.date}</span>
                       </div>
                       <div style={{ display: "flex", gap: 8 }}>
-                        <button onClick={() => { const f = { ...r, amount: (r.amount != null && r.amount !== "" && !isNaN(r.amount)) ? Number(r.amount).toFixed(2) : r.amount }; setTxForm(f); setEditTx(r); setShowAddTx(true); }} style={{ background: "none", border: "none", color: "#60a5fa", fontSize: 13, cursor: "pointer" }}>Edit</button>
+                        <button onClick={() => { const f2 = v => (v != null && v !== "" && !isNaN(v)) ? Number(v).toFixed(2) : v; const f = { ...r, amount: f2(r.amount), pricePerShare: f2(r.pricePerShare), commission: f2(r.commission) }; setTxForm(f); setEditTx(r); setShowAddTx(true); }} style={{ background: "none", border: "none", color: "#60a5fa", fontSize: 13, cursor: "pointer" }}>Edit</button>
                         <button onClick={() => deleteTx(r.id)} style={{ background: "none", border: "none", color: "#f87171", fontSize: 13, cursor: "pointer" }}>Del</button>
                       </div>
                     </div>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, marginTop: 6, fontSize: 13 }}>
-                      {r.shares && <div style={{ color: "#9ca3af" }}>Shares: <span style={{ color: "#fff" }}>{r.shares}</span></div>}
-                      {Number(r.pricePerShare) > 0 && <div style={{ color: "#9ca3af" }}>Price: <span style={{ color: "#fff" }}>{fmt(r.pricePerShare)}</span></div>}
-                      {Number(r.amount) > 0 && <div style={{ color: "#9ca3af" }}>Amount: <span style={{ color: "#fff" }}>{fmt(r.amount)}</span></div>}
-                      {Number(r.commission) > 0 && <div style={{ color: "#9ca3af" }}>Comm: <span style={{ color: "#fff" }}>{fmt(r.commission)}</span></div>}
+                      {r.shares != null && <div style={{ color: "#9ca3af" }}>Shares: <span style={{ color: "#fff" }}>{r.shares}</span></div>}
+                      <div style={{ color: "#9ca3af" }}>Price: <span style={{ color: "#fff" }}>{fmt(r.pricePerShare)}</span></div>
+                      <div style={{ color: "#9ca3af" }}>Amount: <span style={{ color: "#fff" }}>{fmt(r.amount)}</span></div>
+                      <div style={{ color: "#9ca3af" }}>Comm: <span style={{ color: "#fff" }}>{fmt(r.commission)}</span></div>
                     </div>
                     <hr style={S.divider} />
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 4, fontSize: 12 }}>
