@@ -115,13 +115,20 @@ function importACBca(csvText, existing) {
     const dacb = parseFloat(row["Change in ACB"]) || 0;
     const memo = (row["Memo"]||"").trim();
     let type, tShares = "", tPrice = "", tComm = "0", tAmt = "";
-    switch (rawType) {
+    if (rawType.toLowerCase().includes("split")) {
+      type = "STOCK_SPLIT";
+      // Parse "old -> new" from Shares column (e.g. "14300 -> 143")
+      const splitMatch = (row["Shares"] || "").match(/([\d.]+)\s*->\s*([\d.]+)/);
+      if (splitMatch) {
+        const oldS = parseFloat(splitMatch[1]), newS = parseFloat(splitMatch[2]);
+        tShares = oldS > 0 ? newS / oldS : 2;
+      } else { tShares = shares || 2; }
+    } else switch (rawType) {
       case "Buy": type = "BUY"; tShares = shares; tComm = comm; tAmt = amount; break;
       case "Sell": type = "SELL"; tShares = shares; tComm = comm; tAmt = amount; break;
       case "Return of Capital": type = "ROC"; tAmt = Math.abs(amount); break;
       case "Reinvested Cap. Gain Dist.": type = "CAPITAL_GAINS_DIST"; tAmt = Math.abs(dacb); break;
       case "Capital Gains Dividend": type = "CAPITAL_GAINS_DIST"; tAmt = Math.abs(dacb); break;
-      case "Stock Split": type = "STOCK_SPLIT"; tShares = shares; break;
       default: type = "ACB_ADJUSTMENT"; tAmt = dacb; break;
     }
     let pIdx = pMap[portfolioName.toLowerCase()];
