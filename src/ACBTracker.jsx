@@ -3,7 +3,7 @@ import * as Papa from "papaparse";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.2.0";
 const uid = () => Math.random().toString(36).slice(2, 10);
 const r2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 const fmt = (n) => (n == null || isNaN(n)) ? "$0.00" : `$${Number(n).toLocaleString("en-CA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -15,7 +15,7 @@ const TX_TYPES = [
   { value: "SELL", label: "Sell", color: "#f87171" },
   { value: "ROC", label: "Return of Capital", color: "#fbbf24" },
   { value: "REINVESTED_DIST", label: "Reinvested Dist.", color: "#60a5fa" },
-  { value: "CAPITAL_GAINS_DIST", label: "Cap. Gains Dist.", color: "#2dd4bf" },
+  { value: "CAPITAL_GAINS_DIST", label: "Non-Cash Dist.", color: "#2dd4bf" },
   { value: "STOCK_SPLIT", label: "Stock Split", color: "#a78bfa" },
   { value: "SUPERFICIAL_LOSS", label: "Superficial Loss", color: "#fb923c" },
   { value: "ACB_ADJUSTMENT", label: "ACB Adjustment", color: "#f472b6" },
@@ -35,7 +35,7 @@ function computeACB(transactions) {
       case "SELL": if (shares > 0) { const proceeds = amount || qty * price; const aps = totalACB / shares; const dACB = r2(aps * qty); gainLoss = r2(r2(proceeds - commission) - dACB); totalACB = r2(totalACB - dACB); shares -= qty; txProceeds = r2(proceeds); txDispositionACB = dACB; txOutlays = r2(commission); } break;
       case "ROC": totalACB = r2(totalACB - amount); if (totalACB < 0) { gainLoss = r2(-totalACB); note = "Excess ROC → gain"; totalACB = 0; } break;
       case "REINVESTED_DIST": { const cost = amount || qty * price; totalACB = r2(totalACB + cost + commission); shares += qty; note = "DRIP"; break; }
-      case "CAPITAL_GAINS_DIST": totalACB = r2(totalACB + amount); note = "Cap gains → ACB"; break;
+      case "CAPITAL_GAINS_DIST": totalACB = r2(totalACB + amount); note = "Non-cash dist → ACB"; break;
       case "STOCK_SPLIT": shares *= (qty || 2); note = `Split ${qty || 2}:1`; break;
       case "SUPERFICIAL_LOSS": totalACB = r2(totalACB + amount); note = "Denied loss → ACB"; break;
       case "ACB_ADJUSTMENT": totalACB = r2(totalACB + amount); if (totalACB < 0) { gainLoss = r2(-totalACB); totalACB = 0; } break;
@@ -208,7 +208,7 @@ function exportSchedule3PDF(report, portfolioName, year) {
 }
 
 async function fetchETFDistributions(symbol, year) {
-  const prompt = `Search for the ${year} annual tax distribution breakdown for the Canadian ETF "${symbol}". I need per-unit amounts for Return of Capital, Capital Gains, reinvested/phantom capital gains, and other ACB-affecting components. Look for official T3 data from the ETF provider. Respond ONLY with valid JSON: {"found":true/false,"etfName":"","provider":"","year":${year},"recordDate":"YYYY-MM-DD","perUnit":{"returnOfCapital":0,"capitalGains":0,"reinvestedCapitalGains":0},"sourceNotes":"","confidence":"high/medium/low"} If not found, set found to false. Do not fabricate data.`;
+  const prompt = `Search for the ${year} annual tax distribution breakdown for the Canadian ETF "${symbol}" following the Canadian Portfolio Manager blog method. I need the per-unit amounts as reported on CDS.ca (Canadian Depository for Securities) Tax Breakdown Services: 1) "Total Non Cash Distribution ($) Per Unit" — reinvested/phantom distribution that increases ACB, 2) "Return of Capital" per unit — decreases ACB. Look for CDS Innovations data, official T3 data, or the ETF provider's annual tax breakdown. Respond ONLY with valid JSON: {"found":true/false,"etfName":"","provider":"","year":${year},"recordDate":"YYYY-MM-DD","perUnit":{"nonCashDistribution":0,"returnOfCapital":0},"sourceNotes":"","confidence":"high/medium/low"} If not found, set found to false. Do not fabricate data.`;
   const resp = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, tools: [{ type: "web_search_20250305", name: "web_search" }], messages: [{ role: "user", content: prompt }] })
@@ -287,17 +287,21 @@ function TxForm({ tx, onChange, onSave, onCancel, isEdit }) {
   );
 }
 
-// ─── ETF Fetch Panel ───
+// ─── ETF Distribution Panel (CPM Method) ───
 function ETFPanel({ symbol, holdings, onAdd, onClose }) {
   const [status, setStatus] = useState("idle");
   const [result, setResult] = useState(null);
   const [proposed, setProposed] = useState([]);
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear() - 1);
   const [errMsg, setErrMsg] = useState("");
+  const [mode, setMode] = useState("manual");
+  const [manualNonCash, setManualNonCash] = useState("");
+  const [manualROC, setManualROC] = useState("");
+  const [manualDate, setManualDate] = useState("");
 
   const appliedYears = useMemo(() => {
     const s = {};
-    for (const tx of holdings) { const m = (tx.note || "").match(/\[Auto-fetched (\d{4})\]/); if (m) s[m[1]] = true; }
+    for (const tx of holdings) { const m = (tx.note || "").match(/\[Auto-fetched (\d{4})\]|\[CDS (\d{4})\]/); if (m) s[m[1] || m[2]] = true; }
     return s;
   }, [holdings]);
 
@@ -306,6 +310,13 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
     return computeACB(txs).totalShares;
   }, [holdings, selectedYear]);
 
+  const buildProposed = (nonCashPerUnit, rocPerUnit, recordDate, source) => {
+    const txs = [], d = recordDate || `${selectedYear}-12-31`;
+    if (nonCashPerUnit > 0) txs.push({ id: uid(), date: d, type: "CAPITAL_GAINS_DIST", shares: "", pricePerShare: "", commission: "0", amount: r2(nonCashPerUnit * sharesAtYearEnd), note: `[${source} ${selectedYear}] Non-cash dist $${nonCashPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: nonCashPerUnit, _comp: "Non-Cash Dist." });
+    if (rocPerUnit > 0) txs.push({ id: uid(), date: d, type: "ROC", shares: "", pricePerShare: "", commission: "0", amount: r2(rocPerUnit * sharesAtYearEnd), note: `[${source} ${selectedYear}] ROC $${rocPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: rocPerUnit, _comp: "Return of Capital" });
+    return txs;
+  };
+
   const doFetch = async () => {
     if (appliedYears[String(selectedYear)]) return;
     setStatus("loading"); setResult(null); setProposed([]); setErrMsg("");
@@ -313,28 +324,55 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
       const r = await fetchETFDistributions(symbol, selectedYear);
       if (r.found) {
         setResult(r);
-        const txs = [], d = r.recordDate || `${selectedYear}-12-31`, pu = r.perUnit || {};
-        if (pu.returnOfCapital > 0) txs.push({ id: uid(), date: d, type: "ROC", shares: "", pricePerShare: "", commission: "0", amount: pu.returnOfCapital * sharesAtYearEnd, note: `[Auto-fetched ${selectedYear}] ROC $${pu.returnOfCapital}/u × ${sharesAtYearEnd}`, _perUnit: pu.returnOfCapital, _comp: "ROC" });
-        if (pu.reinvestedCapitalGains > 0) txs.push({ id: uid(), date: d, type: "CAPITAL_GAINS_DIST", shares: "", pricePerShare: "", commission: "0", amount: pu.reinvestedCapitalGains * sharesAtYearEnd, note: `[Auto-fetched ${selectedYear}] Reinv. cap gains $${pu.reinvestedCapitalGains}/u × ${sharesAtYearEnd}`, _perUnit: pu.reinvestedCapitalGains, _comp: "Reinv. Cap Gains" });
-        if (pu.capitalGains > 0) txs.push({ id: uid(), date: d, type: "CAPITAL_GAINS_DIST", shares: "", pricePerShare: "", commission: "0", amount: pu.capitalGains * sharesAtYearEnd, note: `[Auto-fetched ${selectedYear}] Cap gains $${pu.capitalGains}/u × ${sharesAtYearEnd}`, _perUnit: pu.capitalGains, _comp: "Cap Gains" });
+        const pu = r.perUnit || {};
+        const txs = buildProposed(pu.nonCashDistribution || 0, pu.returnOfCapital || 0, r.recordDate, "Auto-fetched");
         setProposed(txs);
         setStatus(txs.length > 0 ? "found" : "noitems");
       } else { setResult(r); setStatus("notfound"); }
     } catch (e) { setErrMsg(e.message); setStatus("error"); }
   };
 
+  const doManual = () => {
+    if (appliedYears[String(selectedYear)]) return;
+    const nc = parseFloat(manualNonCash) || 0, roc = parseFloat(manualROC) || 0;
+    if (nc === 0 && roc === 0) { setErrMsg("Enter at least one per-unit amount."); setStatus("error"); return; }
+    const txs = buildProposed(nc, roc, manualDate || `${selectedYear}-12-31`, "CDS");
+    setProposed(txs);
+    setStatus("found");
+  };
+
+  const disabled = sharesAtYearEnd <= 0 || appliedYears[String(selectedYear)];
+
   return (
     <div style={{ ...S.card, borderColor: "#312e81" }}>
-      <div style={{ ...S.row, marginBottom: 8 }}><span style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>Fetch ETF Data — {symbol}</span><button onClick={onClose} style={{ background: "none", border: "none", color: "#6b7280", fontSize: 20, cursor: "pointer" }}>×</button></div>
+      <div style={{ ...S.row, marginBottom: 8 }}><span style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>ETF Distributions — {symbol}</span><button onClick={onClose} style={{ background: "none", border: "none", color: "#6b7280", fontSize: 20, cursor: "pointer" }}>×</button></div>
+      <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 10 }}>CPM method · CDS.ca data</div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
-        <div><label style={S.label}>Tax Year</label><select value={selectedYear} onChange={e => { setSelectedYear(Number(e.target.value)); setStatus("idle"); }} style={S.select}>{Array.from({ length: 10 }, (_, i) => new Date().getFullYear() - 1 - i).map(y => <option key={y} value={y}>{y}</option>)}</select></div>
+        <div><label style={S.label}>Tax Year</label><select value={selectedYear} onChange={e => { setSelectedYear(Number(e.target.value)); setStatus("idle"); setProposed([]); }} style={S.select}>{Array.from({ length: 10 }, (_, i) => new Date().getFullYear() - 1 - i).map(y => <option key={y} value={y}>{y}</option>)}</select></div>
         <div><label style={S.label}>Shares at Year-End</label><div style={{ ...S.input, background: "#1a1f2e" }}>{sharesAtYearEnd.toLocaleString("en-CA", { maximumFractionDigits: 4 })}</div></div>
       </div>
       {appliedYears[String(selectedYear)] && <div style={{ background: "#1c1917", border: "1px solid #854d0e", borderRadius: 8, padding: 10, marginBottom: 10, fontSize: 13, color: "#fbbf24" }}>Already applied for {selectedYear}.</div>}
       {sharesAtYearEnd <= 0 && <div style={{ fontSize: 13, color: "#fbbf24", marginBottom: 10 }}>No shares held at end of {selectedYear}.</div>}
-      {status === "idle" && <button onClick={doFetch} disabled={sharesAtYearEnd <= 0 || appliedYears[String(selectedYear)]} style={{ ...S.btn("#4f46e5"), opacity: sharesAtYearEnd <= 0 || appliedYears[String(selectedYear)] ? 0.4 : 1 }}>Fetch Distribution Data</button>}
+      {status !== "found" && status !== "applied" && (
+        <div style={{ display: "flex", gap: 4, marginBottom: 12 }}>
+          <button onClick={() => { setMode("manual"); setStatus("idle"); setErrMsg(""); }} style={{ ...S.btnSm(mode === "manual" ? "#4f46e5" : "#252d3d"), flex: 1, border: mode === "manual" ? "none" : "1px solid #374151" }}>Manual (CDS.ca)</button>
+          <button onClick={() => { setMode("ai"); setStatus("idle"); setErrMsg(""); }} style={{ ...S.btnSm(mode === "ai" ? "#4f46e5" : "#252d3d"), flex: 1, border: mode === "ai" ? "none" : "1px solid #374151" }}>AI Search</button>
+        </div>
+      )}
+      {mode === "manual" && status === "idle" && (
+        <div>
+          <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 10 }}>Enter per-unit amounts from CDS.ca Tax Breakdown Services.</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+            <div><label style={S.label}>Non-Cash Dist. ($/unit)</label><input type="number" inputMode="decimal" step="any" value={manualNonCash} onChange={e => setManualNonCash(e.target.value)} style={S.input} placeholder="0.000000" /></div>
+            <div><label style={S.label}>Return of Capital ($/unit)</label><input type="number" inputMode="decimal" step="any" value={manualROC} onChange={e => setManualROC(e.target.value)} style={S.input} placeholder="0.000000" /></div>
+          </div>
+          <div style={{ marginBottom: 12 }}><label style={S.label}>Record Date (optional)</label><input type="date" value={manualDate} onChange={e => setManualDate(e.target.value)} style={S.input} /></div>
+          <button onClick={doManual} disabled={disabled} style={{ ...S.btn("#4f46e5"), opacity: disabled ? 0.4 : 1 }}>Calculate & Review</button>
+        </div>
+      )}
+      {mode === "ai" && status === "idle" && <button onClick={doFetch} disabled={disabled} style={{ ...S.btn("#4f46e5"), opacity: disabled ? 0.4 : 1 }}>Search for Distribution Data</button>}
       {status === "loading" && <div style={{ textAlign: "center", padding: 20, color: "#818cf8", fontSize: 14 }}>Searching for {symbol} {selectedYear} data...</div>}
-      {status === "notfound" && <div style={{ background: "#1c1917", borderRadius: 8, padding: 12, fontSize: 13, color: "#fbbf24" }}>Not found. {result?.sourceNotes}</div>}
+      {status === "notfound" && <div style={{ background: "#1c1917", borderRadius: 8, padding: 12, fontSize: 13, color: "#fbbf24" }}>Not found. Try manual entry with CDS.ca data. {result?.sourceNotes}</div>}
       {status === "noitems" && <div style={{ background: "#0c1222", borderRadius: 8, padding: 12, fontSize: 13, color: "#60a5fa" }}>No ACB-affecting components found for {selectedYear}.</div>}
       {status === "error" && <div style={{ background: "#1c1017", borderRadius: 8, padding: 12, fontSize: 13, color: "#f87171" }}>Error: {errMsg}</div>}
       {status === "found" && proposed.length > 0 && (
@@ -344,7 +382,12 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
           {proposed.map(tx => (
             <div key={tx.id} style={S.txCard}>
               <div style={S.row}>
-                <div><span style={{ color: txColor(tx.type), fontWeight: 600, fontSize: 13 }}>{tx._comp}</span><div style={{ fontSize: 16, fontWeight: 700, color: "#fff", marginTop: 2 }}>{fmt(Number(tx.amount))}</div><div style={{ fontSize: 11, color: "#6b7280" }}>${tx._perUnit}/unit × {sharesAtYearEnd}</div></div>
+                <div>
+                  <span style={{ color: txColor(tx.type), fontWeight: 600, fontSize: 13 }}>{tx._comp}</span>
+                  <span style={{ fontSize: 11, color: "#6b7280", marginLeft: 6 }}>{tx.type === "ROC" ? "(decreases ACB)" : "(increases ACB)"}</span>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: "#fff", marginTop: 2 }}>{fmt(Number(tx.amount))}</div>
+                  <div style={{ fontSize: 11, color: "#6b7280" }}>${tx._perUnit}/unit × {sharesAtYearEnd}</div>
+                </div>
                 <button onClick={() => setProposed(p => p.filter(t => t.id !== tx.id))} style={{ background: "none", border: "none", color: "#6b7280", fontSize: 18, cursor: "pointer" }}>✕</button>
               </div>
             </div>
@@ -644,7 +687,7 @@ My Portfolio,VFV.TO,2024-12-31,ROC,,,,125.00,Annual ROC`}</pre>
                     t.value === "SELL" ? "Gain/Loss = proceeds − proportional ACB" :
                     t.value === "ROC" ? "Reduces ACB. Excess → capital gain" :
                     t.value === "REINVESTED_DIST" ? "DRIP: adds shares + ACB" :
-                    t.value === "CAPITAL_GAINS_DIST" ? "Phantom/reinvested gains increase ACB" :
+                    t.value === "CAPITAL_GAINS_DIST" ? "Non-cash/reinvested distribution — increases ACB (CDS.ca)" :
                     t.value === "STOCK_SPLIT" ? "Multiplies shares, ACB/sh adjusts" :
                     t.value === "SUPERFICIAL_LOSS" ? "Denied loss added back to ACB" :
                     "Generic +/- ACB adjustment"
@@ -653,14 +696,24 @@ My Portfolio,VFV.TO,2024-12-31,ROC,,,,125.00,Annual ROC`}</pre>
               ))}
             </div>
             <div style={S.card}>
-              <div style={{ fontSize: 15, fontWeight: 600, color: "#fff", marginBottom: 10 }}>Auto-Fetch ETF Data</div>
+              <div style={{ fontSize: 15, fontWeight: 600, color: "#fff", marginBottom: 10 }}>ETF Distributions (CPM Method)</div>
               <div style={{ fontSize: 13, color: "#9ca3af", lineHeight: 1.7 }}>
-                1. Go to any security &rarr; tap <b style={{ color: "#818cf8" }}>Fetch ETF</b><br />
-                2. Select tax year<br />
-                3. Tap <b style={{ color: "#818cf8" }}>Fetch Distribution Data</b><br />
-                4. Review proposed ROC / cap gains entries<br />
-                5. Tap <b style={{ color: "#34d399" }}>Apply</b><br />
-                Each year fetched only once per security.
+                Based on the <b style={{ color: "#60a5fa" }}>Canadian Portfolio Manager</b> blog method. Data source: <b style={{ color: "#60a5fa" }}>CDS.ca</b> (Canadian Depository for Securities) Tax Breakdown Services.
+                <br /><br />
+                <b style={{ color: "#e5e7eb" }}>Two key fields from CDS:</b><br />
+                &bull; <b style={{ color: "#2dd4bf" }}>Non-Cash Dist.</b> ($/unit) — increases ACB<br />
+                &bull; <b style={{ color: "#f472b6" }}>Return of Capital</b> ($/unit) — decreases ACB
+                <br /><br />
+                <b style={{ color: "#e5e7eb" }}>Manual entry (recommended):</b><br />
+                1. Go to <b style={{ color: "#60a5fa" }}>cdsinnovations.ca</b> &rarr; Tax Breakdown Services<br />
+                2. Search your ETF, select the tax year<br />
+                3. Note "Total Non Cash Distribution" and "Return of Capital" per unit<br />
+                4. In the app: security &rarr; <b style={{ color: "#818cf8" }}>Fetch ETF</b> &rarr; Manual (CDS.ca)<br />
+                5. Enter per-unit amounts &rarr; Calculate &amp; Review &rarr; Apply
+                <br /><br />
+                <b style={{ color: "#e5e7eb" }}>AI Search mode:</b> alternatively, tap AI Search to auto-find distribution data. Results may vary — always verify.
+                <br /><br />
+                <i>Note: DRIPs (reinvested distributions) are tracked separately as REINVESTED_DIST. Cash distributions do not affect ACB.</i>
               </div>
               <div style={{ background: "#1c1917", border: "1px solid #854d0e", borderRadius: 8, padding: 10, marginTop: 10, fontSize: 12, color: "#fbbf24" }}>Always verify against your T3/T5 slips.</div>
             </div>
