@@ -313,8 +313,8 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
 
   const buildProposed = (nonCashPerUnit, rocPerUnit, recordDate, source) => {
     const txs = [], d = recordDate || `${selectedYear}-12-31`;
-    if (nonCashPerUnit > 0) txs.push({ id: uid(), date: d, type: "CAPITAL_GAINS_DIST", shares: "", pricePerShare: "", commission: "0", amount: r2(nonCashPerUnit * sharesAtYearEnd), note: `[${source} ${selectedYear}] Non-cash dist $${nonCashPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: nonCashPerUnit, _comp: "Non-Cash Dist." });
-    if (rocPerUnit > 0) txs.push({ id: uid(), date: d, type: "ROC", shares: "", pricePerShare: "", commission: "0", amount: r2(rocPerUnit * sharesAtYearEnd), note: `[${source} ${selectedYear}] ROC $${rocPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: rocPerUnit, _comp: "Return of Capital" });
+    if (nonCashPerUnit > 0) txs.push({ id: uid(), date: d, type: "CAPITAL_GAINS_DIST", shares: sharesAtYearEnd, pricePerShare: nonCashPerUnit, commission: "0", amount: r2(nonCashPerUnit * sharesAtYearEnd), note: `[${source} ${selectedYear}] Non-cash dist $${nonCashPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: nonCashPerUnit, _comp: "Non-Cash Dist." });
+    if (rocPerUnit > 0) txs.push({ id: uid(), date: d, type: "ROC", shares: sharesAtYearEnd, pricePerShare: rocPerUnit, commission: "0", amount: r2(rocPerUnit * sharesAtYearEnd), note: `[${source} ${selectedYear}] ROC $${rocPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: rocPerUnit, _comp: "Return of Capital" });
     return txs;
   };
 
@@ -551,7 +551,11 @@ export default function ACBTracker() {
             {/* Transaction list */}
             {acbData && acbData.rows.length > 0 ? (
               <div>
-                {[...acbData.rows].reverse().map(r => (
+                {[...acbData.rows].reverse().map(r => {
+                  const amtOnly = ["ROC","CAPITAL_GAINS_DIST","SUPERFICIAL_LOSS","ACB_ADJUSTMENT"].includes(r.type);
+                  const dShares = amtOnly && !Number(r.shares) && r.runningShares > 0 ? r.runningShares : r.shares;
+                  const dPrice = amtOnly && !Number(r.pricePerShare) && Number(r.amount) > 0 && r.runningShares > 0 ? r2(Number(r.amount) / r.runningShares) : r.pricePerShare;
+                  return (
                   <div key={r.id} style={S.txCard}>
                     <div style={S.row}>
                       <div>
@@ -559,13 +563,13 @@ export default function ACBTracker() {
                         <span style={{ color: "#6b7280", fontSize: 12, marginLeft: 8 }}>{r.date}</span>
                       </div>
                       <div style={{ display: "flex", gap: 8 }}>
-                        <button onClick={() => { const f2 = v => (v != null && v !== "" && !isNaN(v)) ? Number(v).toFixed(2) : v; const f = { ...r, amount: f2(r.amount), pricePerShare: f2(r.pricePerShare), commission: f2(r.commission) }; setTxForm(f); setEditTx(r); setShowAddTx(true); }} style={{ background: "none", border: "none", color: "#60a5fa", fontSize: 13, cursor: "pointer" }}>Edit</button>
+                        <button onClick={() => { const f2 = v => (v != null && v !== "" && !isNaN(v)) ? Number(v).toFixed(2) : v; const f = { ...r, amount: f2(r.amount), pricePerShare: f2(r.pricePerShare), commission: f2(r.commission) }; if (["ROC","CAPITAL_GAINS_DIST","SUPERFICIAL_LOSS","ACB_ADJUSTMENT"].includes(r.type) && r.runningShares > 0) { if (!Number(f.shares)) f.shares = r.runningShares; const a = Number(f.amount) || 0; if (!Number(f.pricePerShare) && a > 0) f.pricePerShare = r2(a / r.runningShares).toFixed(2); } setTxForm(f); setEditTx(r); setShowAddTx(true); }} style={{ background: "none", border: "none", color: "#60a5fa", fontSize: 13, cursor: "pointer" }}>Edit</button>
                         <button onClick={() => deleteTx(r.id)} style={{ background: "none", border: "none", color: "#f87171", fontSize: 13, cursor: "pointer" }}>Del</button>
                       </div>
                     </div>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, marginTop: 6, fontSize: 13 }}>
-                      {r.shares != null && <div style={{ color: "#9ca3af" }}>Shares: <span style={{ color: "#fff" }}>{r.shares}</span></div>}
-                      <div style={{ color: "#9ca3af" }}>Price: <span style={{ color: "#fff" }}>{fmt(r.pricePerShare)}</span></div>
+                      {dShares != null && <div style={{ color: "#9ca3af" }}>Shares: <span style={{ color: "#fff" }}>{dShares}</span></div>}
+                      <div style={{ color: "#9ca3af" }}>Price: <span style={{ color: "#fff" }}>{fmt(dPrice)}</span></div>
                       <div style={{ color: "#9ca3af" }}>Amount: <span style={{ color: "#fff" }}>{fmt(r.amount)}</span></div>
                       <div style={{ color: "#9ca3af" }}>Comm: <span style={{ color: "#fff" }}>{fmt(r.commission)}</span></div>
                     </div>
@@ -578,7 +582,8 @@ export default function ACBTracker() {
                     {r.gainLoss != null && <div style={{ marginTop: 4, fontSize: 14, fontWeight: 600, color: r.gainLoss >= 0 ? "#34d399" : "#f87171" }}>G/L: {fmt(r.gainLoss)}</div>}
                     {r.note && <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.note}</div>}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             ) : (
               <div style={{ textAlign: "center", padding: 32, color: "#6b7280", fontSize: 14 }}>No transactions yet</div>
