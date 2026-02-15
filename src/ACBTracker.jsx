@@ -223,33 +223,72 @@ const CDS_LINKS = {
   legacy: "https://services.cds.ca/applications/taxforms/taxforms.nsf/Pages/-EN-LimitedPartnershipsandIncomeTrusts2024?Open",
 };
 const CORS_PROXIES = [
-  (u) => "https://corsproxy.io/?" + encodeURIComponent(u),
-  (u) => "https://api.allorigins.win/raw?url=" + encodeURIComponent(u),
+  { name: "corsproxy.io", fn: (u) => "https://corsproxy.io/?" + encodeURIComponent(u) },
+  { name: "allorigins.win", fn: (u) => "https://api.allorigins.win/raw?url=" + encodeURIComponent(u) },
 ];
 
-async function proxyFetch(url, responseType = "text") {
-  for (const mkUrl of CORS_PROXIES) {
+async function proxyFetch(url, responseType = "text", onLog) {
+  const log = onLog || (() => {});
+  const errors = [];
+  for (const proxy of CORS_PROXIES) {
+    log(`Trying proxy: ${proxy.name}...`);
+    const proxyUrl = proxy.fn(url);
     try {
-      const resp = await fetch(mkUrl(url));
-      if (resp.ok) return responseType === "arraybuffer" ? await resp.arrayBuffer() : await resp.text();
-    } catch { /* try next */ }
+      const resp = await fetch(proxyUrl);
+      if (resp.ok) {
+        const size = resp.headers.get("content-length");
+        log(`${proxy.name}: HTTP ${resp.status} OK${size ? ` (${(size / 1024).toFixed(1)} KB)` : ""}`);
+        return responseType === "arraybuffer" ? await resp.arrayBuffer() : await resp.text();
+      } else {
+        const msg = `${proxy.name}: HTTP ${resp.status} ${resp.statusText}`;
+        log(msg);
+        errors.push(msg);
+      }
+    } catch (e) {
+      const msg = `${proxy.name}: ${e.message || "Network error"}`;
+      log(msg);
+      errors.push(msg);
+    }
   }
-  throw new Error("CORS_BLOCKED");
+  const err = new Error("CORS_BLOCKED");
+  err.details = errors;
+  throw err;
 }
 
-function parseCDSIndexHTML(html) {
+function parseCDSIndexHTML(html, onLog) {
+  const log = onLog || (() => {});
   const doc = new DOMParser().parseFromString(html, "text/html");
+  log(`Received ${html.length.toLocaleString()} bytes of HTML`);
+
+  // Check if it looks like an error page or redirect
+  const title = doc.querySelector("title")?.textContent?.trim() || "";
+  if (title) log(`Page title: "${title}"`);
+
   const table = doc.querySelector("table#taxlist") || doc.querySelector("table");
-  if (!table) return [];
+  if (!table) {
+    // Try to give useful diagnostics about what we got
+    const tables = doc.querySelectorAll("table");
+    log(`No table#taxlist found. Total tables on page: ${tables.length}`);
+    const bodyText = doc.body?.textContent?.trim().slice(0, 200) || "(empty)";
+    log(`Page content preview: ${bodyText}`);
+    return [];
+  }
+
+  log(`Found table${table.id ? ` id="${table.id}"` : ""} with ${table.rows.length} rows`);
+
   const funds = [], seen = {};
+  let rowsSkipped = 0, rowsNoLink = 0, rowsParsed = 0;
   for (const row of table.rows) {
     const cols = row.cells;
-    if (!cols || cols.length < 2) continue;
-    // Find CUSIP (span.Cusip), Date (span.Date), and Form link (a with href)
+    if (!cols || cols.length < 2) { rowsSkipped++; continue; }
     const cusipEl = row.querySelector("span.Cusip");
     const dateEl = row.querySelector("span.Date");
     const linkEl = row.querySelector("a[href]");
-    if (!linkEl) continue;
+    if (!linkEl) {
+      // Fallback: try any <a> or look for text patterns
+      rowsNoLink++;
+      continue;
+    }
     const cusip = cusipEl ? cusipEl.textContent.trim() : "";
     const date = dateEl ? dateEl.textContent.trim() : "";
     const href = linkEl.getAttribute("href") || "";
@@ -257,12 +296,25 @@ function parseCDSIndexHTML(html) {
     if (!name && !cusip) continue;
     const fullUrl = href.startsWith("http") ? href : CDS_BASE + href;
     const key = cusip || name;
-    // Keep only the most recent entry per CUSIP (latest date)
     if (!seen[key] || date > seen[key].date) {
       seen[key] = { cusip, name, date, xlsUrl: fullUrl };
     }
+    rowsParsed++;
   }
-  return Object.values(seen);
+
+  const result = Object.values(seen);
+  log(`Parsed ${rowsParsed} data rows, ${result.length} unique funds (${rowsSkipped} header/empty rows, ${rowsNoLink} rows without download links)`);
+
+  // If we found rows but no funds, show sample row structure for debugging
+  if (result.length === 0 && table.rows.length > 1) {
+    const sampleRow = table.rows[Math.min(1, table.rows.length - 1)];
+    const cellTexts = Array.from(sampleRow.cells || []).map((c, i) => `[${i}]="${c.textContent.trim().slice(0, 40)}"`).join(", ");
+    log(`Sample row structure: ${cellTexts}`);
+    const sampleHTML = sampleRow.innerHTML.slice(0, 300);
+    log(`Sample row HTML: ${sampleHTML}`);
+  }
+
+  return result;
 }
 
 // Parse CDS Excel using exact cell positions from the CDS spreadsheet format
@@ -456,7 +508,10 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
   const [fundList, setFundList] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [fetchingXls, setFetchingXls] = useState(false);
+  const [logs, setLogs] = useState([]);
+  const [showLogs, setShowLogs] = useState(false);
   const fileRef = useRef(null);
+  const addLog = (msg) => setLogs(prev => [...prev, { time: new Date().toLocaleTimeString(), msg }]);
 
   const appliedYears = useMemo(() => {
     const s = {};
@@ -493,36 +548,57 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
   // CDS Search: fetch index page, parse, show fund list
   const doFetchIndex = async () => {
     if (appliedYears[String(selectedYear)] || disabled) return;
-    setStatus("loading"); setFundList([]); setErrMsg(""); setSearchQuery(symbol.replace(/\.TO$/i, ""));
+    setStatus("loading"); setFundList([]); setErrMsg(""); setLogs([]); setShowLogs(false);
+    setSearchQuery(symbol.replace(/\.TO$/i, ""));
+    const targetUrl = CDS_INDEX_URL(selectedYear);
+    addLog(`Target: ${targetUrl}`);
+    addLog(`Fetching T3-${selectedYear} fund index via CORS proxy...`);
     try {
-      const html = await proxyFetch(CDS_INDEX_URL(selectedYear));
-      const funds = parseCDSIndexHTML(html);
-      if (funds.length === 0) throw new Error("No funds found for T3-" + selectedYear + ". Data may not be available yet.");
+      const html = await proxyFetch(targetUrl, "text", addLog);
+      addLog("Parsing HTML response...");
+      const funds = parseCDSIndexHTML(html, addLog);
+      if (funds.length === 0) {
+        addLog("ERROR: No fund entries could be extracted from the page.");
+        throw new Error("No funds found for T3-" + selectedYear + ". The CDS page may have a different format or data may not be available yet. Check the log for details.");
+      }
+      addLog(`Success! ${funds.length} funds loaded.`);
       setFundList(funds);
       setStatus("fundlist");
     } catch (e) {
       if (e.message === "CORS_BLOCKED") {
-        setErrMsg("Could not connect to CDS automatically. Use Upload or Manual mode, or try again later.");
+        const details = e.details?.join("\n") || "All proxies failed";
+        addLog(`All CORS proxies failed:\n${details}`);
+        setErrMsg("Could not connect to CDS automatically. All CORS proxies were blocked or returned errors.");
       } else {
         setErrMsg(e.message);
       }
+      setShowLogs(true);
       setStatus("error");
     }
   };
 
   // Fetch a specific fund's XLS and parse it
   const doFetchXls = async (fund) => {
-    setFetchingXls(true); setErrMsg("");
+    setFetchingXls(true); setErrMsg(""); setLogs([]); setShowLogs(false);
+    addLog(`Selected fund: ${fund.name} (CUSIP: ${fund.cusip})`);
+    addLog(`Downloading Excel: ${fund.xlsUrl}`);
     try {
-      const buf = await proxyFetch(fund.xlsUrl, "arraybuffer");
+      const buf = await proxyFetch(fund.xlsUrl, "arraybuffer", addLog);
+      addLog(`Downloaded ${(buf.byteLength / 1024).toFixed(1)} KB. Parsing Excel...`);
       const r = parseCDSExcel(buf);
+      addLog(`Parse result: symbol="${r.symbol || "?"}", fundName="${r.fundName || "?"}", calcMethod=${r.calcMethod || "dollar"}`);
+      addLog(`Per-unit: nonCash=${r.perUnit?.nonCashDistribution}, ROC=${r.perUnit?.returnOfCapital}`);
       applyResult(r);
     } catch (e) {
       if (e.message === "CORS_BLOCKED") {
+        const details = e.details?.join("\n") || "All proxies failed";
+        addLog(`All CORS proxies failed:\n${details}`);
         setErrMsg("Could not download the spreadsheet automatically. Try uploading it manually.");
       } else {
+        addLog(`Error: ${e.message}`);
         setErrMsg("Failed to parse: " + e.message);
       }
+      setShowLogs(true);
       setStatus("error");
     }
     setFetchingXls(false);
@@ -606,8 +682,13 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
               </button>
             ))}
           </div>
+          {fetchingXls && logs.length > 0 && (
+            <div style={{ background: "#0d1117", borderRadius: 6, padding: 8, marginTop: 8, maxHeight: 120, overflowY: "auto", fontFamily: "monospace", fontSize: 11, lineHeight: 1.5 }}>
+              {logs.map((l, i) => <div key={i} style={{ color: "#8b949e" }}><span style={{ color: "#484f58" }}>{l.time}</span> {l.msg}</div>)}
+            </div>
+          )}
           <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-            <button onClick={() => { setStatus("idle"); setFundList([]); }} style={{ ...S.btnSm("#374151"), fontSize: 12 }}>Back</button>
+            <button onClick={() => { setStatus("idle"); setFundList([]); setLogs([]); }} style={{ ...S.btnSm("#374151"), fontSize: 12 }}>Back</button>
             <a href={cdsUrl} target="_blank" rel="noopener noreferrer" style={{ ...S.btnSm("#252d3d"), fontSize: 12, textDecoration: "none", color: "#818cf8", border: "1px solid #374151", textAlign: "center" }}>Open CDS Site</a>
           </div>
         </div>
@@ -642,15 +723,30 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
       )}
 
       {/* Status indicators */}
-      {status === "loading" && <div style={{ textAlign: "center", padding: 20, color: "#818cf8", fontSize: 14 }}>{mode === "search" ? `Fetching T3-${selectedYear} fund list from CDS...` : "Parsing CDS spreadsheet..."}</div>}
+      {status === "loading" && (
+        <div style={{ padding: 16 }}>
+          <div style={{ textAlign: "center", color: "#818cf8", fontSize: 14, marginBottom: 8 }}>{mode === "search" ? `Fetching T3-${selectedYear} fund list from CDS...` : "Parsing CDS spreadsheet..."}</div>
+          {logs.length > 0 && (
+            <div style={{ background: "#0d1117", borderRadius: 6, padding: 8, maxHeight: 150, overflowY: "auto", fontFamily: "monospace", fontSize: 11, lineHeight: 1.5 }}>
+              {logs.map((l, i) => <div key={i} style={{ color: "#8b949e" }}><span style={{ color: "#484f58" }}>{l.time}</span> {l.msg}</div>)}
+            </div>
+          )}
+        </div>
+      )}
       {status === "noitems" && <div style={{ background: "#0c1222", borderRadius: 8, padding: 12, fontSize: 13, color: "#60a5fa" }}>No ACB-affecting components (Return of Capital or Non-Cash Distribution) found for {selectedYear}. The values may be zero, or this may be the wrong fund.</div>}
       {status === "error" && (
         <div style={{ background: "#1c1017", borderRadius: 8, padding: 12, fontSize: 13, color: "#f87171", marginBottom: 8 }}>
           {errMsg}
-          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-            <button onClick={() => { setStatus("idle"); setErrMsg(""); }} style={{ ...S.btnSm("#374151"), fontSize: 12 }}>Try Again</button>
-            {mode === "search" && <button onClick={() => { setMode("upload"); setStatus("idle"); setErrMsg(""); }} style={{ ...S.btnSm("#252d3d"), fontSize: 12, border: "1px solid #374151" }}>Upload Instead</button>}
+          <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+            <button onClick={() => { setStatus("idle"); setErrMsg(""); setShowLogs(false); }} style={{ ...S.btnSm("#374151"), fontSize: 12 }}>Try Again</button>
+            {mode === "search" && <button onClick={() => { setMode("upload"); setStatus("idle"); setErrMsg(""); setShowLogs(false); }} style={{ ...S.btnSm("#252d3d"), fontSize: 12, border: "1px solid #374151" }}>Upload Instead</button>}
+            {logs.length > 0 && <button onClick={() => setShowLogs(v => !v)} style={{ ...S.btnSm("#252d3d"), fontSize: 12, border: "1px solid #374151" }}>{showLogs ? "Hide" : "Show"} Log ({logs.length})</button>}
           </div>
+          {showLogs && logs.length > 0 && (
+            <div style={{ background: "#0d1117", borderRadius: 6, padding: 8, marginTop: 8, maxHeight: 200, overflowY: "auto", fontFamily: "monospace", fontSize: 11, lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+              {logs.map((l, i) => <div key={i} style={{ color: l.msg.startsWith("ERROR") || l.msg.includes("failed") || l.msg.includes("Error") ? "#f87171" : l.msg.includes("Success") || l.msg.includes("OK") ? "#34d399" : "#8b949e" }}><span style={{ color: "#484f58" }}>{l.time}</span> {l.msg}</div>)}
+            </div>
+          )}
         </div>
       )}
 
