@@ -16,7 +16,8 @@ const TX_TYPES = [
   { value: "SELL", label: "Sell", color: "#f87171" },
   { value: "ROC", label: "Return of Capital", color: "#fbbf24" },
   { value: "REINVESTED_DIST", label: "Reinvested Dist.", color: "#60a5fa" },
-  { value: "CAPITAL_GAINS_DIST", label: "Non-Cash Dist.", color: "#2dd4bf" },
+  { value: "CAPITAL_GAINS_DIST", label: "Cap. Gains Dist.", color: "#2dd4bf" },
+  { value: "REINVESTED_CAP_GAINS", label: "Reinvested Cap. Gains", color: "#22d3ee" },
   { value: "STOCK_SPLIT", label: "Stock Split", color: "#a78bfa" },
   { value: "SUPERFICIAL_LOSS", label: "Superficial Loss", color: "#fb923c" },
   { value: "ACB_ADJUSTMENT", label: "ACB Adjustment", color: "#f472b6" },
@@ -36,7 +37,8 @@ function computeACB(transactions) {
       case "SELL": if (shares > 0) { const proceeds = amount || qty * price; const aps = totalACB / shares; const dACB = r2(aps * qty); gainLoss = r2(r2(proceeds - commission) - dACB); totalACB = r2(totalACB - dACB); shares -= qty; txProceeds = r2(proceeds); txDispositionACB = dACB; txOutlays = r2(commission); } break;
       case "ROC": { const rocAmt = amount || r2(qty * price); totalACB = r2(totalACB - rocAmt); if (totalACB < 0) { gainLoss = r2(-totalACB); note = "Excess ROC → gain"; totalACB = 0; } break; }
       case "REINVESTED_DIST": { const cost = amount || qty * price; totalACB = r2(totalACB + cost + commission); shares += qty; note = "DRIP"; break; }
-      case "CAPITAL_GAINS_DIST": { const distAmt = amount || r2(qty * price); totalACB = r2(totalACB + distAmt); note = "Non-cash dist → ACB"; break; }
+      case "CAPITAL_GAINS_DIST": { note = "Cap. gains dist (no ACB impact)"; break; }
+      case "REINVESTED_CAP_GAINS": { const distAmt = amount || r2(qty * price); totalACB = r2(totalACB + distAmt); note = "Reinvested cap. gains → ACB"; break; }
       case "STOCK_SPLIT": shares *= (qty || 2); note = `Split ${qty || 2}:1`; break;
       case "SUPERFICIAL_LOSS": { const slAmt = amount || r2(qty * price); totalACB = r2(totalACB + slAmt); note = "Denied loss → ACB"; break; }
       case "ACB_ADJUSTMENT": { const adjAmt = amount || r2(qty * price); totalACB = r2(totalACB + adjAmt); if (totalACB < 0) { gainLoss = r2(-totalACB); totalACB = 0; } break; }
@@ -129,8 +131,8 @@ function importACBca(csvText, existing) {
       case "Buy": type = "BUY"; tShares = shares; tPrice = aps || (shares > 0 ? r2(amount / shares) : 0); tComm = comm; tAmt = amount; break;
       case "Sell": type = "SELL"; tShares = shares; tPrice = aps || (shares > 0 ? r2(amount / shares) : 0); tComm = comm; tAmt = amount; break;
       case "Return of Capital": type = "ROC"; tShares = shares; tPrice = aps || (shares > 0 ? r2(Math.abs(amount) / shares) : 0); tAmt = Math.abs(amount); break;
-      case "Reinvested Cap. Gain Dist.": type = "CAPITAL_GAINS_DIST"; tShares = shares; tPrice = aps || (shares > 0 ? r2(Math.abs(dacb) / shares) : 0); tAmt = Math.abs(dacb); break;
-      case "Capital Gains Dividend": type = "CAPITAL_GAINS_DIST"; tShares = shares; tPrice = aps || (shares > 0 ? r2(Math.abs(dacb) / shares) : 0); tAmt = Math.abs(dacb); break;
+      case "Reinvested Cap. Gain Dist.": type = "REINVESTED_CAP_GAINS"; tShares = shares; tPrice = aps || (shares > 0 ? r2(Math.abs(dacb) / shares) : 0); tAmt = Math.abs(dacb); break;
+      case "Capital Gains Dividend": type = "CAPITAL_GAINS_DIST"; tShares = shares; tPrice = aps || (shares > 0 ? r2(Math.abs(amount) / shares) : 0); tAmt = Math.abs(amount); break;
       default: type = "ACB_ADJUSTMENT"; tShares = shares; tPrice = aps; tAmt = dacb; break;
     }
     let pIdx = pMap[portfolioName.toLowerCase()];
@@ -264,7 +266,7 @@ function Sheet({ open, onClose, title, children }) {
 function TxForm({ tx, onChange, onSave, onCancel, isEdit }) {
   const needsShares = true;
   const needsPrice = tx.type !== "STOCK_SPLIT";
-  const needsAmount = ["BUY","SELL","ROC","REINVESTED_DIST","SUPERFICIAL_LOSS","ACB_ADJUSTMENT","CAPITAL_GAINS_DIST"].includes(tx.type);
+  const needsAmount = ["BUY","SELL","ROC","REINVESTED_DIST","SUPERFICIAL_LOSS","ACB_ADJUSTMENT","CAPITAL_GAINS_DIST","REINVESTED_CAP_GAINS"].includes(tx.type);
   const needsComm = ["BUY","SELL","REINVESTED_DIST"].includes(tx.type);
   return (
     <div>
@@ -314,7 +316,7 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
 
   const buildProposed = (nonCashPerUnit, rocPerUnit, recordDate, source) => {
     const txs = [], d = recordDate || `${selectedYear}-12-31`;
-    if (nonCashPerUnit > 0) txs.push({ id: uid(), date: d, type: "CAPITAL_GAINS_DIST", shares: sharesAtYearEnd, pricePerShare: nonCashPerUnit, commission: "0", amount: r2(nonCashPerUnit * sharesAtYearEnd), note: `[${source} ${selectedYear}] Non-cash dist $${nonCashPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: nonCashPerUnit, _comp: "Non-Cash Dist." });
+    if (nonCashPerUnit > 0) txs.push({ id: uid(), date: d, type: "REINVESTED_CAP_GAINS", shares: sharesAtYearEnd, pricePerShare: nonCashPerUnit, commission: "0", amount: r2(nonCashPerUnit * sharesAtYearEnd), note: `[${source} ${selectedYear}] Reinvested cap. gains $${nonCashPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: nonCashPerUnit, _comp: "Reinvested Cap. Gains" });
     if (rocPerUnit > 0) txs.push({ id: uid(), date: d, type: "ROC", shares: sharesAtYearEnd, pricePerShare: rocPerUnit, commission: "0", amount: r2(rocPerUnit * sharesAtYearEnd), note: `[${source} ${selectedYear}] ROC $${rocPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: rocPerUnit, _comp: "Return of Capital" });
     return txs;
   };
@@ -365,7 +367,7 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
         <div>
           <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 10 }}>Enter per-unit amounts from CDS.ca Tax Breakdown Services.</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
-            <div><label style={S.label}>Non-Cash Dist. ($/unit)</label><input type="number" inputMode="decimal" step="any" value={manualNonCash} onChange={e => setManualNonCash(e.target.value)} style={S.input} placeholder="0.000000" /></div>
+            <div><label style={S.label}>Reinvested Cap. Gains ($/unit)</label><input type="number" inputMode="decimal" step="any" value={manualNonCash} onChange={e => setManualNonCash(e.target.value)} style={S.input} placeholder="0.000000" /></div>
             <div><label style={S.label}>Return of Capital ($/unit)</label><input type="number" inputMode="decimal" step="any" value={manualROC} onChange={e => setManualROC(e.target.value)} style={S.input} placeholder="0.000000" /></div>
           </div>
           <div style={{ marginBottom: 12 }}><label style={S.label}>Record Date (optional)</label><input type="date" value={manualDate} onChange={e => setManualDate(e.target.value)} style={S.input} /></div>
@@ -671,7 +673,7 @@ export default function ACBTracker() {
               <div style={{ fontSize: 13, color: "#9ca3af", lineHeight: 1.6 }}>
                 Columns: <code style={{ color: "#60a5fa" }}>portfolio, symbol, date, type, shares, pricePerShare, commission, amount, note</code>
                 <br /><br />
-                Types: BUY, SELL, ROC, REINVESTED_DIST, CAPITAL_GAINS_DIST, STOCK_SPLIT, SUPERFICIAL_LOSS, ACB_ADJUSTMENT
+                Types: BUY, SELL, ROC, REINVESTED_DIST, CAPITAL_GAINS_DIST, REINVESTED_CAP_GAINS, STOCK_SPLIT, SUPERFICIAL_LOSS, ACB_ADJUSTMENT
                 <br /><br />
                 Dates: YYYY-MM-DD format
               </div>
@@ -689,7 +691,8 @@ My Portfolio,VFV.TO,2024-12-31,ROC,,,,125.00,Annual ROC`}</pre>
                     t.value === "SELL" ? "Gain/Loss = proceeds − proportional ACB" :
                     t.value === "ROC" ? "Reduces ACB. Excess → capital gain" :
                     t.value === "REINVESTED_DIST" ? "DRIP: adds shares + ACB" :
-                    t.value === "CAPITAL_GAINS_DIST" ? "Non-cash/reinvested distribution — increases ACB (CDS.ca)" :
+                    t.value === "CAPITAL_GAINS_DIST" ? "Cash capital gains distribution — no ACB impact" :
+                    t.value === "REINVESTED_CAP_GAINS" ? "Reinvested (non-cash) capital gains — increases ACB" :
                     t.value === "STOCK_SPLIT" ? "Multiplies shares, ACB/sh adjusts" :
                     t.value === "SUPERFICIAL_LOSS" ? "Denied loss added back to ACB" :
                     "Generic +/- ACB adjustment"
@@ -703,19 +706,19 @@ My Portfolio,VFV.TO,2024-12-31,ROC,,,,125.00,Annual ROC`}</pre>
                 Based on the <b style={{ color: "#60a5fa" }}>Canadian Portfolio Manager</b> blog method. Data source: <b style={{ color: "#60a5fa" }}>CDS.ca</b> (Canadian Depository for Securities) Tax Breakdown Services.
                 <br /><br />
                 <b style={{ color: "#e5e7eb" }}>Two key fields from CDS:</b><br />
-                &bull; <b style={{ color: "#2dd4bf" }}>Non-Cash Dist.</b> ($/unit) — increases ACB<br />
+                &bull; <b style={{ color: "#22d3ee" }}>Reinvested Cap. Gains</b> ($/unit) — increases ACB<br />
                 &bull; <b style={{ color: "#f472b6" }}>Return of Capital</b> ($/unit) — decreases ACB
                 <br /><br />
                 <b style={{ color: "#e5e7eb" }}>Manual entry (recommended):</b><br />
                 1. Go to <b style={{ color: "#60a5fa" }}>cdsinnovations.ca</b> &rarr; Tax Breakdown Services<br />
                 2. Search your ETF, select the tax year<br />
-                3. Note "Total Non Cash Distribution" and "Return of Capital" per unit<br />
+                3. Note "Reinvested Capital Gains" and "Return of Capital" per unit<br />
                 4. In the app: security &rarr; <b style={{ color: "#818cf8" }}>Fetch ETF</b> &rarr; Manual (CDS.ca)<br />
                 5. Enter per-unit amounts &rarr; Calculate &amp; Review &rarr; Apply
                 <br /><br />
                 <b style={{ color: "#e5e7eb" }}>AI Search mode:</b> alternatively, tap AI Search to auto-find distribution data. Results may vary — always verify.
                 <br /><br />
-                <i>Note: DRIPs (reinvested distributions) are tracked separately as REINVESTED_DIST. Cash distributions do not affect ACB.</i>
+                <i>Note: DRIPs (reinvested distributions) are tracked separately as REINVESTED_DIST. Regular capital gains distributions (CAPITAL_GAINS_DIST) do not affect ACB. Only reinvested/non-cash capital gains (REINVESTED_CAP_GAINS) increase ACB.</i>
               </div>
               <div style={{ background: "#1c1917", border: "1px solid #854d0e", borderRadius: 8, padding: 10, marginTop: 10, fontSize: 12, color: "#fbbf24" }}>Always verify against your T3/T5 slips.</div>
             </div>
