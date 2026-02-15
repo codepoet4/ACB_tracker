@@ -3,7 +3,7 @@ import * as Papa from "papaparse";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-const APP_VERSION = "1.3.0";
+const APP_VERSION = "1.3.1";
 const uid = () => Math.random().toString(36).slice(2, 10);
 const r2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 const fmt = (n) => (n == null || isNaN(n)) ? "$0.00" : `$${Number(n).toLocaleString("en-CA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -34,14 +34,14 @@ function computeACB(transactions) {
     let gainLoss = null, note = "", txProceeds = null, txDispositionACB = null, txOutlays = null;
     switch (tx.type) {
       case "BUY": { const cost = amount || qty * price; totalACB += cost + commission; shares += qty; break; }
-      case "SELL": if (shares > 0) { const proceeds = amount || qty * price; const dACB = (totalACB / shares) * qty; gainLoss = r2(proceeds - commission - dACB); totalACB -= dACB; shares -= qty; txProceeds = r2(proceeds); txDispositionACB = r2(dACB); txOutlays = r2(commission); } break;
-      case "ROC": { const rocAmt = amount || qty * price; totalACB -= rocAmt; if (totalACB < 0) { gainLoss = r2(-totalACB); note = "Excess ROC → gain"; totalACB = 0; } break; }
+      case "SELL": if (shares > 0) { const proceeds = amount || qty * price; const dACB = (totalACB / shares) * qty; gainLoss = proceeds - commission - dACB; totalACB -= dACB; shares -= qty; txProceeds = proceeds; txDispositionACB = dACB; txOutlays = commission; } break;
+      case "ROC": { const rocAmt = amount || qty * price; totalACB -= rocAmt; if (totalACB < 0) { gainLoss = -totalACB; note = "Excess ROC → gain"; totalACB = 0; } break; }
       case "REINVESTED_DIST": { const cost = amount || qty * price; totalACB += cost + commission; shares += qty; note = "DRIP"; break; }
       case "CAPITAL_GAINS_DIST": { note = "Cap. gains dist (no ACB impact)"; break; }
       case "REINVESTED_CAP_GAINS": { const distAmt = amount || qty * price; totalACB += distAmt; note = "Reinvested cap. gains → ACB"; break; }
       case "STOCK_SPLIT": shares *= (qty || 2); note = `Split ${qty || 2}:1`; break;
       case "SUPERFICIAL_LOSS": { const slAmt = amount || qty * price; totalACB += slAmt; note = "Denied loss → ACB"; break; }
-      case "ACB_ADJUSTMENT": { const adjAmt = amount || qty * price; totalACB += adjAmt; if (totalACB < 0) { gainLoss = r2(-totalACB); totalACB = 0; } break; }
+      case "ACB_ADJUSTMENT": { const adjAmt = amount || qty * price; totalACB += adjAmt; if (totalACB < 0) { gainLoss = -totalACB; totalACB = 0; } break; }
     }
     rows.push({ ...tx, runningShares: shares, runningACB: r2(totalACB), acbPerShare: shares > 0 ? r2(totalACB / shares) : 0, gainLoss, proceeds: txProceeds, dispositionACB: txDispositionACB, outlays: txOutlays, note: tx.note || note });
   }
@@ -129,13 +129,13 @@ function importACBca(csvText, existing) {
       } else { tShares = shares || 2; }
     } else {
       const rt = rawType.toLowerCase();
-      if (rt === "buy") { type = "BUY"; tShares = shares; tPrice = aps || (shares > 0 ? r2(amount / shares) : 0); tComm = comm; tAmt = amount; }
-      else if (rt === "sell") { type = "SELL"; tShares = shares; tPrice = aps || (shares > 0 ? r2(amount / shares) : 0); tComm = comm; tAmt = amount; }
-      else if (rt.includes("return of capital")) { type = "ROC"; tShares = shares; tPrice = aps || (shares > 0 ? r2(Math.abs(amount) / shares) : 0); tAmt = Math.abs(amount); }
-      else if (rt.includes("reinvest") && (rt.includes("cap") || rt.includes("gain"))) { type = "REINVESTED_CAP_GAINS"; tShares = shares; tPrice = aps || (shares > 0 ? r2(Math.abs(dacb) / shares) : 0); tAmt = Math.abs(dacb); }
-      else if (rt.includes("reinvest") || rt.includes("drip")) { type = "REINVESTED_DIST"; tShares = shares; tPrice = aps || (shares > 0 ? r2(Math.abs(amount) / shares) : 0); tComm = comm; tAmt = Math.abs(amount); }
-      else if (rt.includes("non-cash") || rt.includes("non cash") || rt.includes("phantom")) { type = "REINVESTED_CAP_GAINS"; tShares = shares; tPrice = aps || (shares > 0 ? r2(Math.abs(dacb) / shares) : 0); tAmt = Math.abs(dacb); }
-      else if (rt.includes("capital gain")) { type = "CAPITAL_GAINS_DIST"; tShares = shares; tPrice = aps || (shares > 0 ? r2(Math.abs(amount) / shares) : 0); tAmt = Math.abs(amount); }
+      if (rt === "buy") { type = "BUY"; tShares = shares; tPrice = aps || (shares > 0 ? amount / shares : 0); tComm = comm; tAmt = amount; }
+      else if (rt === "sell") { type = "SELL"; tShares = shares; tPrice = aps || (shares > 0 ? amount / shares : 0); tComm = comm; tAmt = amount; }
+      else if (rt.includes("return of capital")) { type = "ROC"; tShares = shares; tPrice = aps || (shares > 0 ? Math.abs(amount) / shares : 0); tAmt = Math.abs(amount); }
+      else if (rt.includes("reinvest") && (rt.includes("cap") || rt.includes("gain"))) { type = "REINVESTED_CAP_GAINS"; tShares = shares; tPrice = aps || (shares > 0 ? Math.abs(dacb) / shares : 0); tAmt = Math.abs(dacb); }
+      else if (rt.includes("reinvest") || rt.includes("drip")) { type = "REINVESTED_DIST"; tShares = shares; tPrice = aps || (shares > 0 ? Math.abs(amount) / shares : 0); tComm = comm; tAmt = Math.abs(amount); }
+      else if (rt.includes("non-cash") || rt.includes("non cash") || rt.includes("phantom")) { type = "REINVESTED_CAP_GAINS"; tShares = shares; tPrice = aps || (shares > 0 ? Math.abs(dacb) / shares : 0); tAmt = Math.abs(dacb); }
+      else if (rt.includes("capital gain")) { type = "CAPITAL_GAINS_DIST"; tShares = shares; tPrice = aps || (shares > 0 ? Math.abs(amount) / shares : 0); tAmt = Math.abs(amount); }
       else { type = "ACB_ADJUSTMENT"; tShares = shares; tPrice = aps; tAmt = dacb; }
     }
     let pIdx = pMap[portfolioName.toLowerCase()];
@@ -319,8 +319,8 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
 
   const buildProposed = (nonCashPerUnit, rocPerUnit, recordDate, source) => {
     const txs = [], d = recordDate || `${selectedYear}-12-31`;
-    if (nonCashPerUnit > 0) txs.push({ id: uid(), date: d, type: "REINVESTED_CAP_GAINS", shares: sharesAtYearEnd, pricePerShare: nonCashPerUnit, commission: "0", amount: r2(nonCashPerUnit * sharesAtYearEnd), note: `[${source} ${selectedYear}] Reinvested cap. gains $${nonCashPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: nonCashPerUnit, _comp: "Reinvested Cap. Gains" });
-    if (rocPerUnit > 0) txs.push({ id: uid(), date: d, type: "ROC", shares: sharesAtYearEnd, pricePerShare: rocPerUnit, commission: "0", amount: r2(rocPerUnit * sharesAtYearEnd), note: `[${source} ${selectedYear}] ROC $${rocPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: rocPerUnit, _comp: "Return of Capital" });
+    if (nonCashPerUnit > 0) txs.push({ id: uid(), date: d, type: "REINVESTED_CAP_GAINS", shares: sharesAtYearEnd, pricePerShare: nonCashPerUnit, commission: "0", amount: nonCashPerUnit * sharesAtYearEnd, note: `[${source} ${selectedYear}] Reinvested cap. gains $${nonCashPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: nonCashPerUnit, _comp: "Reinvested Cap. Gains" });
+    if (rocPerUnit > 0) txs.push({ id: uid(), date: d, type: "ROC", shares: sharesAtYearEnd, pricePerShare: rocPerUnit, commission: "0", amount: rocPerUnit * sharesAtYearEnd, note: `[${source} ${selectedYear}] ROC $${rocPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: rocPerUnit, _comp: "Return of Capital" });
     return txs;
   };
 
