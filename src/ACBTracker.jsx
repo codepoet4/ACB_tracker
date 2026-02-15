@@ -4,7 +4,7 @@ import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-const APP_VERSION = "1.5.1";
+const APP_VERSION = "1.5.3";
 const uid = () => Math.random().toString(36).slice(2, 10);
 let _dp = 2;
 const fmt = (n) => { const v = (n != null && !isNaN(n)) ? Number(n) : 0; return `$${v.toLocaleString("en-CA", { minimumFractionDigits: _dp, maximumFractionDigits: _dp })}`; };
@@ -217,10 +217,17 @@ function exportSchedule3PDF(report, portfolioName, year) {
 
 // ─── CDS Tax Breakdown Service (Auto-Fetch + Upload + Manual) ───
 const CDS_BASE = "https://services.cds.ca";
-const CDS_INDEX_URL = (year) => `${CDS_BASE}/applications/taxforms/taxforms.nsf/PROCESSED-EN-?OpenView&Start=1&Count=3000&RestrictToCategory=T3-${year}`;
+const CDS_BASE_NEW = "https://ctbsext.posttrade.cds.ca";
+// URLs to try for the fund index, in order of preference
+const CDS_INDEX_URLS = (year) => year >= 2025
+  ? [`${CDS_BASE_NEW}/ctbsExt/external-landing`]
+  : [
+      `${CDS_BASE}/taxforms/index.html`,
+      `${CDS_BASE}/applications/taxforms/taxforms.nsf/PROCESSED-EN-?OpenView&Start=1&Count=3000&RestrictToCategory=T3-${year}`,
+    ];
 const CDS_LINKS = {
-  current: "https://services.cds.ca/applications/taxforms/taxforms.nsf/Pages/-EN-LimitedPartnershipsandIncomeTrusts?Open",
-  legacy: "https://services.cds.ca/applications/taxforms/taxforms.nsf/Pages/-EN-LimitedPartnershipsandIncomeTrusts2024?Open",
+  current: "https://ctbsext.posttrade.cds.ca/ctbsExt/",
+  legacy: "https://services.cds.ca/taxforms/index.html",
 };
 const CORS_PROXIES = [
   { name: "corsproxy.io", fn: (u) => "https://corsproxy.io/?" + encodeURIComponent(u) },
@@ -255,27 +262,87 @@ async function proxyFetch(url, responseType = "text", onLog) {
   throw err;
 }
 
-function parseCDSIndexHTML(html, onLog) {
+function parseCDSIndexHTML(html, onLog, sourceUrl) {
   const log = onLog || (() => {});
   const doc = new DOMParser().parseFromString(html, "text/html");
   log(`Received ${html.length.toLocaleString()} bytes of HTML`);
 
-  // Check if it looks like an error page or redirect
   const title = doc.querySelector("title")?.textContent?.trim() || "";
   if (title) log(`Page title: "${title}"`);
 
-  const table = doc.querySelector("table#taxlist") || doc.querySelector("table");
-  if (!table) {
-    // Try to give useful diagnostics about what we got
-    const tables = doc.querySelectorAll("table");
-    log(`No table#taxlist found. Total tables on page: ${tables.length}`);
-    const bodyText = doc.body?.textContent?.trim().slice(0, 200) || "(empty)";
-    log(`Page content preview: ${bodyText}`);
-    return [];
+  // Determine the base URL for resolving relative links
+  const base = sourceUrl ? sourceUrl.replace(/\/[^/]*$/, "/") : CDS_BASE;
+
+  // Strategy 1: Look for table#taxlist (old Domino format)
+  const taxlistTable = doc.querySelector("table#taxlist");
+  if (taxlistTable) {
+    log(`Found table#taxlist with ${taxlistTable.rows.length} rows (Domino format)`);
+    return parseDominoTable(taxlistTable, log, base);
   }
 
-  log(`Found table${table.id ? ` id="${table.id}"` : ""} with ${table.rows.length} rows`);
+  // Strategy 2: Scan ALL links on the page for Excel/PDF file downloads
+  const allLinks = doc.querySelectorAll("a[href]");
+  log(`No table#taxlist. Scanning ${allLinks.length} links for downloadable files...`);
+  const fileLinks = [];
+  let xlsCount = 0, pdfCount = 0, otherCount = 0;
+  for (const link of allLinks) {
+    const href = link.getAttribute("href") || "";
+    const text = link.textContent.trim();
+    const hrefLower = href.toLowerCase();
+    const isXls = hrefLower.endsWith(".xls") || hrefLower.endsWith(".xlsx") || hrefLower.includes("$file");
+    const isPdf = hrefLower.endsWith(".pdf");
+    if (isXls || isPdf) {
+      const fullUrl = href.startsWith("http") ? href : (href.startsWith("/") ? new URL(href, sourceUrl || CDS_BASE).href : base + href);
+      fileLinks.push({ name: text || href.split("/").pop(), href: fullUrl, type: isXls ? "xls" : "pdf" });
+      if (isXls) xlsCount++; else pdfCount++;
+    } else if (href && !href.startsWith("#") && !href.startsWith("javascript")) {
+      otherCount++;
+    }
+  }
+  log(`Found ${xlsCount} Excel links, ${pdfCount} PDF links, ${otherCount} other links`);
 
+  if (fileLinks.length > 0) {
+    // Try to extract CUSIP and fund name from link text or surrounding context
+    const funds = [], seen = {};
+    for (const fl of fileLinks) {
+      // Try to find CUSIP in nearby table row or parent element
+      let cusip = "", date = "", name = fl.name;
+      // Check if the link text or URL contains a CUSIP-like pattern (8-9 digits)
+      const cusipMatch = (fl.name + " " + fl.href).match(/\b(\d{8,9})\b/);
+      if (cusipMatch) cusip = cusipMatch[1];
+      const key = cusip || name;
+      if (!seen[key]) {
+        seen[key] = { cusip, name, date, xlsUrl: fl.href, fileType: fl.type };
+        funds.push(seen[key]);
+      }
+    }
+    log(`Extracted ${funds.length} fund entries from file links`);
+    return funds;
+  }
+
+  // Strategy 3: Try every table on the page
+  const tables = doc.querySelectorAll("table");
+  log(`Trying all ${tables.length} tables on the page...`);
+  for (let ti = 0; ti < tables.length; ti++) {
+    const t = tables[ti];
+    if (t.rows.length < 2) continue;
+    const result = parseGenericTable(t, log, base, ti);
+    if (result.length > 0) return result;
+  }
+
+  // Nothing found — show diagnostics
+  const bodyText = (doc.body?.textContent || "").replace(/\s+/g, " ").trim();
+  log(`Page body preview (first 300 chars): ${bodyText.slice(0, 300)}`);
+  // Show all links for debugging
+  if (allLinks.length > 0 && allLinks.length <= 20) {
+    log(`All links on page:`);
+    for (const a of allLinks) log(`  href="${a.getAttribute("href")}" text="${a.textContent.trim().slice(0, 60)}"`);
+  }
+  return [];
+}
+
+// Parse old Domino-style table#taxlist (span.Cusip, span.Date, a[href])
+function parseDominoTable(table, log, base) {
   const funds = [], seen = {};
   let rowsSkipped = 0, rowsNoLink = 0, rowsParsed = 0;
   for (const row of table.rows) {
@@ -284,37 +351,47 @@ function parseCDSIndexHTML(html, onLog) {
     const cusipEl = row.querySelector("span.Cusip");
     const dateEl = row.querySelector("span.Date");
     const linkEl = row.querySelector("a[href]");
-    if (!linkEl) {
-      // Fallback: try any <a> or look for text patterns
-      rowsNoLink++;
-      continue;
-    }
+    if (!linkEl) { rowsNoLink++; continue; }
     const cusip = cusipEl ? cusipEl.textContent.trim() : "";
     const date = dateEl ? dateEl.textContent.trim() : "";
     const href = linkEl.getAttribute("href") || "";
     const name = linkEl.textContent.trim();
     if (!name && !cusip) continue;
-    const fullUrl = href.startsWith("http") ? href : CDS_BASE + href;
+    const fullUrl = href.startsWith("http") ? href : (href.startsWith("/") ? new URL(href, base).href : base + href);
     const key = cusip || name;
-    if (!seen[key] || date > seen[key].date) {
-      seen[key] = { cusip, name, date, xlsUrl: fullUrl };
-    }
+    if (!seen[key] || date > seen[key].date) { seen[key] = { cusip, name, date, xlsUrl: fullUrl }; }
     rowsParsed++;
   }
-
   const result = Object.values(seen);
-  log(`Parsed ${rowsParsed} data rows, ${result.length} unique funds (${rowsSkipped} header/empty rows, ${rowsNoLink} rows without download links)`);
-
-  // If we found rows but no funds, show sample row structure for debugging
+  log(`Domino table: ${rowsParsed} data rows, ${result.length} unique funds (${rowsSkipped} skipped, ${rowsNoLink} no link)`);
   if (result.length === 0 && table.rows.length > 1) {
-    const sampleRow = table.rows[Math.min(1, table.rows.length - 1)];
-    const cellTexts = Array.from(sampleRow.cells || []).map((c, i) => `[${i}]="${c.textContent.trim().slice(0, 40)}"`).join(", ");
-    log(`Sample row structure: ${cellTexts}`);
-    const sampleHTML = sampleRow.innerHTML.slice(0, 300);
-    log(`Sample row HTML: ${sampleHTML}`);
+    const sr = table.rows[Math.min(1, table.rows.length - 1)];
+    log(`Sample row HTML: ${sr.innerHTML.slice(0, 300)}`);
   }
-
   return result;
+}
+
+// Parse any HTML table looking for rows with download links
+function parseGenericTable(table, log, base, tableIndex) {
+  const funds = [], seen = {};
+  let rowsWithLinks = 0;
+  for (const row of table.rows) {
+    const link = row.querySelector("a[href]");
+    if (!link) continue;
+    const href = link.getAttribute("href") || "";
+    const hrefLower = href.toLowerCase();
+    if (!hrefLower.endsWith(".xls") && !hrefLower.endsWith(".xlsx") && !hrefLower.endsWith(".pdf") && !hrefLower.includes("$file")) continue;
+    rowsWithLinks++;
+    const cells = Array.from(row.cells).map(c => c.textContent.trim());
+    const name = link.textContent.trim() || cells.find(c => c.length > 5) || "";
+    const cusip = cells.find(c => /^\d{8,9}$/.test(c)) || "";
+    const date = cells.find(c => /\d{4}[-/]\d{2}[-/]\d{2}/.test(c)) || "";
+    const fullUrl = href.startsWith("http") ? href : (href.startsWith("/") ? new URL(href, base).href : base + href);
+    const key = cusip || name;
+    if (key && !seen[key]) { seen[key] = { cusip, name, date, xlsUrl: fullUrl }; funds.push(seen[key]); }
+  }
+  if (rowsWithLinks > 0) log(`Table[${tableIndex}]: ${table.rows.length} rows, ${rowsWithLinks} with file links, ${funds.length} funds extracted`);
+  return funds;
 }
 
 // Parse CDS Excel using exact cell positions from the CDS spreadsheet format
@@ -545,36 +622,59 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
     }
   };
 
-  // CDS Search: fetch index page, parse, show fund list
+  // CDS Search: fetch index page(s), parse, show fund list
   const doFetchIndex = async () => {
     if (appliedYears[String(selectedYear)] || disabled) return;
     setStatus("loading"); setFundList([]); setErrMsg(""); setLogs([]); setShowLogs(false);
     setSearchQuery(symbol.replace(/\.TO$/i, ""));
-    const targetUrl = CDS_INDEX_URL(selectedYear);
-    addLog(`Target: ${targetUrl}`);
-    addLog(`Fetching T3-${selectedYear} fund index via CORS proxy...`);
-    try {
-      const html = await proxyFetch(targetUrl, "text", addLog);
-      addLog("Parsing HTML response...");
-      const funds = parseCDSIndexHTML(html, addLog);
-      if (funds.length === 0) {
-        addLog("ERROR: No fund entries could be extracted from the page.");
-        throw new Error("No funds found for T3-" + selectedYear + ". The CDS page may have a different format or data may not be available yet. Check the log for details.");
+    const urls = CDS_INDEX_URLS(selectedYear);
+    addLog(`Tax year: ${selectedYear} — will try ${urls.length} URL(s)`);
+    if (selectedYear >= 2025) addLog("Note: 2025+ data is hosted on the new CTBS portal (may use PDF format)");
+
+    let lastError = null;
+    for (let i = 0; i < urls.length; i++) {
+      const targetUrl = urls[i];
+      addLog(`\n--- Attempt ${i + 1}/${urls.length}: ${targetUrl}`);
+      try {
+        const html = await proxyFetch(targetUrl, "text", addLog);
+        addLog("Parsing HTML response...");
+        const funds = parseCDSIndexHTML(html, addLog, targetUrl);
+        if (funds.length > 0) {
+          addLog(`Success! ${funds.length} funds loaded from attempt ${i + 1}.`);
+          // Check if any funds are PDF-only
+          const pdfOnly = funds.filter(f => f.fileType === "pdf");
+          const xlsFunds = funds.filter(f => f.fileType !== "pdf");
+          if (pdfOnly.length > 0 && xlsFunds.length === 0) {
+            addLog(`All ${funds.length} files are PDFs (2025+ format). PDF auto-parsing is not yet supported.`);
+            addLog("Use Upload mode with Excel files, or Manual mode to enter values from the PDF.");
+          }
+          setFundList(funds);
+          setStatus("fundlist");
+          return;
+        }
+        addLog(`No funds extracted from this URL. Trying next...`);
+        lastError = new Error("Page returned HTML but no fund entries could be extracted. See log for details.");
+      } catch (e) {
+        if (e.message === "CORS_BLOCKED") {
+          const details = e.details?.join("; ") || "All proxies failed";
+          addLog(`CORS blocked: ${details}`);
+          lastError = e;
+        } else {
+          addLog(`Error: ${e.message}`);
+          lastError = e;
+        }
       }
-      addLog(`Success! ${funds.length} funds loaded.`);
-      setFundList(funds);
-      setStatus("fundlist");
-    } catch (e) {
-      if (e.message === "CORS_BLOCKED") {
-        const details = e.details?.join("\n") || "All proxies failed";
-        addLog(`All CORS proxies failed:\n${details}`);
-        setErrMsg("Could not connect to CDS automatically. All CORS proxies were blocked or returned errors.");
-      } else {
-        setErrMsg(e.message);
-      }
-      setShowLogs(true);
-      setStatus("error");
     }
+
+    // All URLs failed
+    addLog(`\n--- All ${urls.length} URL(s) exhausted. No funds loaded.`);
+    if (lastError?.message === "CORS_BLOCKED") {
+      setErrMsg("Could not connect to CDS automatically. All CORS proxies were blocked or returned errors. Use Upload or Manual mode.");
+    } else {
+      setErrMsg(lastError?.message || "No funds found. Check the log for details.");
+    }
+    setShowLogs(true);
+    setStatus("error");
   };
 
   // Fetch a specific fund's XLS and parse it
@@ -663,7 +763,10 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
       {/* CDS Search mode */}
       {mode === "search" && status === "idle" && (
         <div>
-          <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 10, lineHeight: 1.5 }}>Fetch the T3 fund list from CDS and search for your ETF. The Excel file will be downloaded and parsed automatically.</div>
+          <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 10, lineHeight: 1.5 }}>
+            Fetch the T3 fund list from <b style={{ color: "#818cf8" }}>{selectedYear >= 2025 ? "ctbsext.posttrade.cds.ca" : "services.cds.ca"}</b> and search for your ETF.
+            {selectedYear >= 2025 && <><br /><span style={{ color: "#fbbf24" }}>Note: 2025+ data may be in PDF format. If auto-parse fails, use Upload or Manual mode.</span></>}
+          </div>
           <button onClick={doFetchIndex} disabled={disabled} style={{ ...S.btn(disabled ? "#374151" : "#4f46e5"), opacity: disabled ? 0.4 : 1 }}>Fetch {selectedYear} Fund List from CDS</button>
         </div>
       )}
@@ -676,9 +779,9 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
           <div style={{ maxHeight: 240, overflowY: "auto", borderRadius: 8, border: "1px solid #2d3548" }}>
             {filteredFunds.length === 0 && <div style={{ padding: 12, fontSize: 13, color: "#6b7280", textAlign: "center" }}>No matches. Try a different search term.</div>}
             {filteredFunds.map((f, i) => (
-              <button key={f.cusip + i} onClick={() => doFetchXls(f)} disabled={fetchingXls} style={{ display: "block", width: "100%", textAlign: "left", background: i % 2 === 0 ? "#1a1f2e" : "#151a27", border: "none", borderBottom: "1px solid #2d3548", padding: "8px 12px", cursor: fetchingXls ? "wait" : "pointer", color: "#e5e7eb", fontSize: 13 }}>
-                <div style={{ fontWeight: 500 }}>{f.name}</div>
-                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>CUSIP: {f.cusip}{f.date ? ` · ${f.date}` : ""}</div>
+              <button key={(f.cusip || f.name) + i} onClick={() => f.fileType === "pdf" ? window.open(f.xlsUrl, "_blank") : doFetchXls(f)} disabled={fetchingXls} style={{ display: "block", width: "100%", textAlign: "left", background: i % 2 === 0 ? "#1a1f2e" : "#151a27", border: "none", borderBottom: "1px solid #2d3548", padding: "8px 12px", cursor: fetchingXls ? "wait" : "pointer", color: "#e5e7eb", fontSize: 13 }}>
+                <div style={{ fontWeight: 500 }}>{f.name} {f.fileType === "pdf" && <span style={{ fontSize: 10, color: "#fbbf24", marginLeft: 4 }}>PDF</span>}</div>
+                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>{f.cusip ? `CUSIP: ${f.cusip}` : ""}{f.date ? ` · ${f.date}` : ""}{f.fileType === "pdf" ? " · Opens in new tab" : " · Click to auto-parse"}</div>
               </button>
             ))}
           </div>
