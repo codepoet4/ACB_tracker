@@ -3,7 +3,7 @@ import * as Papa from "papaparse";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-const APP_VERSION = "1.2.0";
+const APP_VERSION = "1.3.0";
 const uid = () => Math.random().toString(36).slice(2, 10);
 const r2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 const fmt = (n) => (n == null || isNaN(n)) ? "$0.00" : `$${Number(n).toLocaleString("en-CA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -33,19 +33,19 @@ function computeACB(transactions) {
     const qty = Number(tx.shares) || 0, price = Number(tx.pricePerShare) || 0, commission = Number(tx.commission) || 0, amount = Number(tx.amount) || 0;
     let gainLoss = null, note = "", txProceeds = null, txDispositionACB = null, txOutlays = null;
     switch (tx.type) {
-      case "BUY": { const cost = amount || qty * price; totalACB = r2(totalACB + cost + commission); shares += qty; break; }
-      case "SELL": if (shares > 0) { const proceeds = amount || qty * price; const aps = totalACB / shares; const dACB = r2(aps * qty); gainLoss = r2(r2(proceeds - commission) - dACB); totalACB = r2(totalACB - dACB); shares -= qty; txProceeds = r2(proceeds); txDispositionACB = dACB; txOutlays = r2(commission); } break;
-      case "ROC": { const rocAmt = amount || r2(qty * price); totalACB = r2(totalACB - rocAmt); if (totalACB < 0) { gainLoss = r2(-totalACB); note = "Excess ROC → gain"; totalACB = 0; } break; }
-      case "REINVESTED_DIST": { const cost = amount || qty * price; totalACB = r2(totalACB + cost + commission); shares += qty; note = "DRIP"; break; }
+      case "BUY": { const cost = amount || qty * price; totalACB += cost + commission; shares += qty; break; }
+      case "SELL": if (shares > 0) { const proceeds = amount || qty * price; const dACB = (totalACB / shares) * qty; gainLoss = r2(proceeds - commission - dACB); totalACB -= dACB; shares -= qty; txProceeds = r2(proceeds); txDispositionACB = r2(dACB); txOutlays = r2(commission); } break;
+      case "ROC": { const rocAmt = amount || qty * price; totalACB -= rocAmt; if (totalACB < 0) { gainLoss = r2(-totalACB); note = "Excess ROC → gain"; totalACB = 0; } break; }
+      case "REINVESTED_DIST": { const cost = amount || qty * price; totalACB += cost + commission; shares += qty; note = "DRIP"; break; }
       case "CAPITAL_GAINS_DIST": { note = "Cap. gains dist (no ACB impact)"; break; }
-      case "REINVESTED_CAP_GAINS": { const distAmt = amount || r2(qty * price); totalACB = r2(totalACB + distAmt); note = "Reinvested cap. gains → ACB"; break; }
+      case "REINVESTED_CAP_GAINS": { const distAmt = amount || qty * price; totalACB += distAmt; note = "Reinvested cap. gains → ACB"; break; }
       case "STOCK_SPLIT": shares *= (qty || 2); note = `Split ${qty || 2}:1`; break;
-      case "SUPERFICIAL_LOSS": { const slAmt = amount || r2(qty * price); totalACB = r2(totalACB + slAmt); note = "Denied loss → ACB"; break; }
-      case "ACB_ADJUSTMENT": { const adjAmt = amount || r2(qty * price); totalACB = r2(totalACB + adjAmt); if (totalACB < 0) { gainLoss = r2(-totalACB); totalACB = 0; } break; }
+      case "SUPERFICIAL_LOSS": { const slAmt = amount || qty * price; totalACB += slAmt; note = "Denied loss → ACB"; break; }
+      case "ACB_ADJUSTMENT": { const adjAmt = amount || qty * price; totalACB += adjAmt; if (totalACB < 0) { gainLoss = r2(-totalACB); totalACB = 0; } break; }
     }
-    rows.push({ ...tx, runningShares: shares, runningACB: totalACB, acbPerShare: shares > 0 ? r2(totalACB / shares) : 0, gainLoss, proceeds: txProceeds, dispositionACB: txDispositionACB, outlays: txOutlays, note: tx.note || note });
+    rows.push({ ...tx, runningShares: shares, runningACB: r2(totalACB), acbPerShare: shares > 0 ? r2(totalACB / shares) : 0, gainLoss, proceeds: txProceeds, dispositionACB: txDispositionACB, outlays: txOutlays, note: tx.note || note });
   }
-  return { rows, totalShares: shares, totalACB, acbPerShare: shares > 0 ? r2(totalACB / shares) : 0 };
+  return { rows, totalShares: shares, totalACB: r2(totalACB), acbPerShare: shares > 0 ? r2(totalACB / shares) : 0 };
 }
 
 const CSV_HEADERS = ["portfolio","symbol","date","type","shares","pricePerShare","commission","amount","note"];
