@@ -127,13 +127,16 @@ function importACBca(csvText, existing) {
         const oldS = parseFloat(splitMatch[1]), newS = parseFloat(splitMatch[2]);
         tShares = oldS > 0 ? newS / oldS : 2;
       } else { tShares = shares || 2; }
-    } else switch (rawType) {
-      case "Buy": type = "BUY"; tShares = shares; tPrice = aps || (shares > 0 ? r2(amount / shares) : 0); tComm = comm; tAmt = amount; break;
-      case "Sell": type = "SELL"; tShares = shares; tPrice = aps || (shares > 0 ? r2(amount / shares) : 0); tComm = comm; tAmt = amount; break;
-      case "Return of Capital": type = "ROC"; tShares = shares; tPrice = aps || (shares > 0 ? r2(Math.abs(amount) / shares) : 0); tAmt = Math.abs(amount); break;
-      case "Reinvested Cap. Gain Dist.": type = "REINVESTED_CAP_GAINS"; tShares = shares; tPrice = aps || (shares > 0 ? r2(Math.abs(dacb) / shares) : 0); tAmt = Math.abs(dacb); break;
-      case "Capital Gains Dividend": type = "CAPITAL_GAINS_DIST"; tShares = shares; tPrice = aps || (shares > 0 ? r2(Math.abs(amount) / shares) : 0); tAmt = Math.abs(amount); break;
-      default: type = "ACB_ADJUSTMENT"; tShares = shares; tPrice = aps; tAmt = dacb; break;
+    } else {
+      const rt = rawType.toLowerCase();
+      if (rt === "buy") { type = "BUY"; tShares = shares; tPrice = aps || (shares > 0 ? r2(amount / shares) : 0); tComm = comm; tAmt = amount; }
+      else if (rt === "sell") { type = "SELL"; tShares = shares; tPrice = aps || (shares > 0 ? r2(amount / shares) : 0); tComm = comm; tAmt = amount; }
+      else if (rt.includes("return of capital")) { type = "ROC"; tShares = shares; tPrice = aps || (shares > 0 ? r2(Math.abs(amount) / shares) : 0); tAmt = Math.abs(amount); }
+      else if (rt.includes("reinvest") && (rt.includes("cap") || rt.includes("gain"))) { type = "REINVESTED_CAP_GAINS"; tShares = shares; tPrice = aps || (shares > 0 ? r2(Math.abs(dacb) / shares) : 0); tAmt = Math.abs(dacb); }
+      else if (rt.includes("reinvest") || rt.includes("drip")) { type = "REINVESTED_DIST"; tShares = shares; tPrice = aps || (shares > 0 ? r2(Math.abs(amount) / shares) : 0); tComm = comm; tAmt = Math.abs(amount); }
+      else if (rt.includes("non-cash") || rt.includes("non cash") || rt.includes("phantom")) { type = "REINVESTED_CAP_GAINS"; tShares = shares; tPrice = aps || (shares > 0 ? r2(Math.abs(dacb) / shares) : 0); tAmt = Math.abs(dacb); }
+      else if (rt.includes("capital gain")) { type = "CAPITAL_GAINS_DIST"; tShares = shares; tPrice = aps || (shares > 0 ? r2(Math.abs(amount) / shares) : 0); tAmt = Math.abs(amount); }
+      else { type = "ACB_ADJUSTMENT"; tShares = shares; tPrice = aps; tAmt = dacb; }
     }
     let pIdx = pMap[portfolioName.toLowerCase()];
     if (pIdx === undefined) { pIdx = portfolios.length; portfolios.push({ id: uid(), name: portfolioName, holdings: {} }); pMap[portfolioName.toLowerCase()] = pIdx; }
