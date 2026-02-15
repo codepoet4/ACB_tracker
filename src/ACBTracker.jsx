@@ -3,7 +3,7 @@ import * as Papa from "papaparse";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-const APP_VERSION = "1.4.0";
+const APP_VERSION = "1.4.1";
 const uid = () => Math.random().toString(36).slice(2, 10);
 let _dp = 2;
 const fmt = (n) => { const v = (n != null && !isNaN(n)) ? Number(n) : 0; return `$${v.toLocaleString("en-CA", { minimumFractionDigits: _dp, maximumFractionDigits: _dp })}`; };
@@ -279,9 +279,9 @@ function TxForm({ tx, onChange, onSave, onCancel, isEdit }) {
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
         {needsShares && <div><label style={S.label}>{tx.type === "STOCK_SPLIT" ? "Multiplier" : "Shares"}</label><input type="number" inputMode="decimal" step="any" value={tx.shares} onChange={e => onChange({ ...tx, shares: e.target.value })} style={S.input} placeholder="0" /></div>}
-        {needsPrice && <div><label style={S.label}>Price/Share</label><input type="text" inputMode="decimal" value={tx.pricePerShare} onChange={e => { const v = e.target.value; if (v === "" || /^\d*\.?\d{0,5}$/.test(v)) onChange({ ...tx, pricePerShare: v }); }} onBlur={e => { const n = parseFloat(e.target.value); if (!isNaN(n)) { const d = Math.abs(n) < 1 ? 5 : 2; onChange({ ...tx, pricePerShare: n.toFixed(d) }); } }} style={S.input} placeholder="0.00" /></div>}
-        {needsAmount && <div><label style={S.label}>Amount ($)</label><input type="text" inputMode="decimal" value={tx.amount} onChange={e => { const v = e.target.value; if (v === "" || /^\d*\.?\d{0,2}$/.test(v)) onChange({ ...tx, amount: v }); }} onBlur={e => { const n = parseFloat(e.target.value); if (!isNaN(n)) onChange({ ...tx, amount: n.toFixed(2) }); }} style={S.input} placeholder="0.00" /></div>}
-        {needsComm && <div><label style={S.label}>Commission</label><input type="text" inputMode="decimal" value={tx.commission} onChange={e => { const v = e.target.value; if (v === "" || /^\d*\.?\d{0,2}$/.test(v)) onChange({ ...tx, commission: v }); }} onBlur={e => { const n = parseFloat(e.target.value); if (!isNaN(n)) onChange({ ...tx, commission: n.toFixed(2) }); }} style={S.input} placeholder="0.00" /></div>}
+        {needsPrice && <div><label style={S.label}>Price/Share</label><input type="text" inputMode="decimal" value={tx.pricePerShare} onChange={e => { const v = e.target.value; if (v === "" || /^\d*\.?\d{0,6}$/.test(v)) onChange({ ...tx, pricePerShare: v }); }} onBlur={e => { const n = parseFloat(e.target.value); if (!isNaN(n)) onChange({ ...tx, pricePerShare: n.toFixed(6).replace(/0{1,4}$/, "") }); }} style={S.input} placeholder="0.00" /></div>}
+        {needsAmount && <div><label style={S.label}>Amount ($)</label><input type="text" inputMode="decimal" value={tx.amount} onChange={e => { const v = e.target.value; if (v === "" || /^\d*\.?\d{0,6}$/.test(v)) onChange({ ...tx, amount: v }); }} onBlur={e => { const n = parseFloat(e.target.value); if (!isNaN(n)) onChange({ ...tx, amount: n.toFixed(6).replace(/0{1,4}$/, "") }); }} style={S.input} placeholder="0.00" /></div>}
+        {needsComm && <div><label style={S.label}>Commission</label><input type="text" inputMode="decimal" value={tx.commission} onChange={e => { const v = e.target.value; if (v === "" || /^\d*\.?\d{0,6}$/.test(v)) onChange({ ...tx, commission: v }); }} onBlur={e => { const n = parseFloat(e.target.value); if (!isNaN(n)) onChange({ ...tx, commission: n.toFixed(6).replace(/0{1,4}$/, "") }); }} style={S.input} placeholder="0.00" /></div>}
         {!needsShares && !needsAmount && <div />}
         {!needsPrice && !needsComm && <div />}
       </div>
@@ -570,7 +570,7 @@ export default function ACBTracker() {
                         <span style={{ color: "#6b7280", fontSize: 12, marginLeft: 8 }}>{r.date}</span>
                       </div>
                       <div style={{ display: "flex", gap: 8 }}>
-                        <button onClick={() => { const f2 = v => (v != null && v !== "" && !isNaN(v)) ? Number(v).toFixed(2) : v; const fp = v => { const n = Number(v); if (v == null || v === "" || isNaN(n)) return v; return n.toFixed(Math.abs(n) < 1 ? 5 : 2); }; const f = { ...r, amount: f2(r.amount), pricePerShare: fp(r.pricePerShare), commission: f2(r.commission) }; setTxForm(f); setEditTx(r); setShowAddTx(true); }} style={{ background: "none", border: "none", color: "#60a5fa", fontSize: 13, cursor: "pointer" }}>Edit</button>
+                        <button onClick={() => { const ff = v => { if (v == null || v === "" || isNaN(v)) return v; return Number(v).toFixed(6).replace(/0{1,4}$/, ""); }; const f = { ...r, amount: ff(r.amount), pricePerShare: ff(r.pricePerShare), commission: ff(r.commission) }; setTxForm(f); setEditTx(r); setShowAddTx(true); }} style={{ background: "none", border: "none", color: "#60a5fa", fontSize: 13, cursor: "pointer" }}>Edit</button>
                         <button onClick={() => deleteTx(r.id)} style={{ background: "none", border: "none", color: "#f87171", fontSize: 13, cursor: "pointer" }}>Del</button>
                       </div>
                     </div>
