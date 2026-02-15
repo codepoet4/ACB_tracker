@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import * as Papa from "papaparse";
+import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-const APP_VERSION = "1.4.3";
+const APP_VERSION = "1.5.0";
 const uid = () => Math.random().toString(36).slice(2, 10);
 let _dp = 2;
 const fmt = (n) => { const v = (n != null && !isNaN(n)) ? Number(n) : 0; return `$${v.toLocaleString("en-CA", { minimumFractionDigits: _dp, maximumFractionDigits: _dp })}`; };
@@ -214,15 +215,99 @@ function exportSchedule3PDF(report, portfolioName, year) {
   doc.save(`schedule3_${portfolioName.replace(/\s+/g, "_")}_${year}.pdf`);
 }
 
-async function fetchETFDistributions(symbol, year) {
-  const prompt = `Search for the ${year} annual tax distribution breakdown for the Canadian ETF "${symbol}" following the Canadian Portfolio Manager blog method. I need the per-unit amounts as reported on CDS.ca (Canadian Depository for Securities) Tax Breakdown Services: 1) "Total Non Cash Distribution ($) Per Unit" — reinvested/phantom distribution that increases ACB, 2) "Return of Capital" per unit — decreases ACB. Look for CDS Innovations data, official T3 data, or the ETF provider's annual tax breakdown. Respond ONLY with valid JSON: {"found":true/false,"etfName":"","provider":"","year":${year},"recordDate":"YYYY-MM-DD","perUnit":{"nonCashDistribution":0,"returnOfCapital":0},"sourceNotes":"","confidence":"high/medium/low"} If not found, set found to false. Do not fabricate data.`;
-  const resp = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, tools: [{ type: "web_search_20250305", name: "web_search" }], messages: [{ role: "user", content: prompt }] })
-  });
-  const data = await resp.json();
-  const text = data.content?.map(i => i.text || "").filter(Boolean).join("\n") || "";
-  try { return JSON.parse(text.replace(/```json|```/g, "").trim()); } catch { return { found: false, sourceNotes: "Parse error: " + text.slice(0, 300) }; }
+// ─── CDS Tax Breakdown Excel Parser ───
+const CDS_LINKS = {
+  current: "https://services.cds.ca/applications/taxforms/taxforms.nsf/Pages/-EN-LimitedPartnershipsandIncomeTrusts?Open",
+  legacy: "https://services.cds.ca/applications/taxforms/taxforms.nsf/Pages/-EN-LimitedPartnershipsandIncomeTrusts2024?Open",
+};
+
+function parseCDSExcel(arrayBuffer) {
+  const wb = XLSX.read(new Uint8Array(arrayBuffer), { type: "array" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  if (!ws || !ws["!ref"]) return { found: false, error: "Empty spreadsheet" };
+  const range = XLSX.utils.decode_range(ws["!ref"]);
+
+  let returnOfCapital = 0, nonCashDist = 0, fundName = "", calcMethod = "dollar", totalDistPerUnit = 0;
+  const allRows = [];
+
+  // Scan all cells to find labels and their associated values
+  for (let r = range.s.r; r <= range.e.r; r++) {
+    const rowCells = [];
+    for (let c = range.s.c; c <= Math.min(range.e.c, 20); c++) {
+      const cell = ws[XLSX.utils.encode_cell({ r, c })];
+      rowCells.push(cell ? { v: cell.v, t: cell.t } : null);
+    }
+    allRows.push(rowCells);
+
+    // Build a text representation of label cells in this row
+    const labelText = rowCells.map(c => c && typeof c.v === "string" ? c.v : "").join(" ").toLowerCase();
+    // Find the first numeric value in this row (per-unit amount)
+    const findNum = (startCol = 0) => {
+      for (let c = startCol; c < rowCells.length; c++) {
+        const cell = rowCells[c];
+        if (cell && typeof cell.v === "number" && cell.v !== 0) return { val: cell.v, col: c };
+      }
+      return null;
+    };
+
+    // Fund name: look for text in early rows that's long enough to be a name
+    if (r < 8 && !fundName) {
+      for (const cell of rowCells) {
+        if (cell && typeof cell.v === "string" && cell.v.trim().length > 10
+          && !cell.v.toLowerCase().includes("cds") && !cell.v.toLowerCase().includes("tax breakdown")
+          && !cell.v.toLowerCase().includes("limited partner") && !cell.v.toLowerCase().includes("income trust")) {
+          fundName = cell.v.trim();
+          break;
+        }
+      }
+    }
+
+    // Calculation method (BMO uses percentages)
+    if (labelText.includes("calculation method") || labelText.includes("calc method")) {
+      if (labelText.includes("cent") || labelText.includes("%")) calcMethod = "percent";
+    }
+
+    // Return of Capital
+    if (labelText.includes("return of capital") && !labelText.includes("total")) {
+      const num = findNum();
+      if (num) returnOfCapital = num.val;
+    }
+
+    // Total Non-Cash Distribution (reinvested/phantom capital gains)
+    if ((labelText.includes("non-cash") || labelText.includes("non cash")) && labelText.includes("total")) {
+      const num = findNum();
+      if (num) nonCashDist = num.val;
+    }
+    // Also check for just "non cash distribution" without "total" as a fallback
+    if (nonCashDist === 0 && (labelText.includes("non-cash distribution") || labelText.includes("non cash distribution"))) {
+      const num = findNum();
+      if (num) nonCashDist = num.val;
+    }
+
+    // Total distribution per unit (needed for BMO percent conversion)
+    if (labelText.includes("total distribution") && (labelText.includes("per unit") || labelText.includes("/unit"))) {
+      const num = findNum();
+      if (num) totalDistPerUnit = num.val;
+    }
+    // Also look for "total cash distribution" as possible total
+    if (totalDistPerUnit === 0 && labelText.includes("total cash dist")) {
+      const num = findNum();
+      if (num) totalDistPerUnit = num.val;
+    }
+  }
+
+  // Handle BMO percentage-based method
+  if (calcMethod === "percent" && totalDistPerUnit > 0) {
+    returnOfCapital = (returnOfCapital / 100) * totalDistPerUnit;
+    nonCashDist = (nonCashDist / 100) * totalDistPerUnit;
+  }
+
+  return {
+    found: returnOfCapital > 0 || nonCashDist > 0,
+    fundName,
+    calcMethod,
+    perUnit: { nonCashDistribution: Math.round(nonCashDist * 1e6) / 1e6, returnOfCapital: Math.round(returnOfCapital * 1e6) / 1e6 },
+  };
 }
 
 // ─── Styles ───
@@ -294,21 +379,22 @@ function TxForm({ tx, onChange, onSave, onCancel, isEdit }) {
   );
 }
 
-// ─── ETF Distribution Panel (CPM Method) ───
+// ─── ETF Distribution Panel (CDS Tax Breakdown Service) ───
 function ETFPanel({ symbol, holdings, onAdd, onClose }) {
   const [status, setStatus] = useState("idle");
   const [result, setResult] = useState(null);
   const [proposed, setProposed] = useState([]);
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear() - 1);
   const [errMsg, setErrMsg] = useState("");
-  const [mode, setMode] = useState("manual");
+  const [mode, setMode] = useState("upload");
   const [manualNonCash, setManualNonCash] = useState("");
   const [manualROC, setManualROC] = useState("");
   const [manualDate, setManualDate] = useState("");
+  const fileRef = useRef(null);
 
   const appliedYears = useMemo(() => {
     const s = {};
-    for (const tx of holdings) { const m = (tx.note || "").match(/\[Auto-fetched (\d{4})\]|\[CDS (\d{4})\]/); if (m) s[m[1] || m[2]] = true; }
+    for (const tx of holdings) { const m = (tx.note || "").match(/\[(?:CDS|Auto-fetched) (\d{4})\]/); if (m) s[m[1]] = true; }
     return s;
   }, [holdings]);
 
@@ -319,24 +405,35 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
 
   const buildProposed = (nonCashPerUnit, rocPerUnit, recordDate, source) => {
     const txs = [], d = recordDate || `${selectedYear}-12-31`;
-    if (nonCashPerUnit > 0) txs.push({ id: uid(), date: d, type: "REINVESTED_CAP_GAINS", shares: sharesAtYearEnd, pricePerShare: nonCashPerUnit, commission: "0", amount: nonCashPerUnit * sharesAtYearEnd, note: `[${source} ${selectedYear}] Reinvested cap. gains $${nonCashPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: nonCashPerUnit, _comp: "Reinvested Cap. Gains" });
-    if (rocPerUnit > 0) txs.push({ id: uid(), date: d, type: "ROC", shares: sharesAtYearEnd, pricePerShare: rocPerUnit, commission: "0", amount: rocPerUnit * sharesAtYearEnd, note: `[${source} ${selectedYear}] ROC $${rocPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: rocPerUnit, _comp: "Return of Capital" });
+    if (nonCashPerUnit > 0) txs.push({ id: uid(), date: d, type: "REINVESTED_CAP_GAINS", shares: sharesAtYearEnd, pricePerShare: nonCashPerUnit, commission: "0", amount: Math.round(nonCashPerUnit * sharesAtYearEnd * 1e6) / 1e6, note: `[${source} ${selectedYear}] Reinvested cap. gains $${nonCashPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: nonCashPerUnit, _comp: "Reinvested Cap. Gains" });
+    if (rocPerUnit > 0) txs.push({ id: uid(), date: d, type: "ROC", shares: sharesAtYearEnd, pricePerShare: rocPerUnit, commission: "0", amount: Math.round(rocPerUnit * sharesAtYearEnd * 1e6) / 1e6, note: `[${source} ${selectedYear}] ROC $${rocPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: rocPerUnit, _comp: "Return of Capital" });
     return txs;
   };
 
-  const doFetch = async () => {
+  const handleFile = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
     if (appliedYears[String(selectedYear)]) return;
     setStatus("loading"); setResult(null); setProposed([]); setErrMsg("");
     try {
-      const r = await fetchETFDistributions(symbol, selectedYear);
+      const buf = await file.arrayBuffer();
+      const r = parseCDSExcel(buf);
       if (r.found) {
         setResult(r);
         const pu = r.perUnit || {};
-        const txs = buildProposed(pu.nonCashDistribution || 0, pu.returnOfCapital || 0, r.recordDate, "Auto-fetched");
+        const txs = buildProposed(pu.nonCashDistribution || 0, pu.returnOfCapital || 0, null, "CDS");
         setProposed(txs);
         setStatus(txs.length > 0 ? "found" : "noitems");
-      } else { setResult(r); setStatus("notfound"); }
-    } catch (e) { setErrMsg(e.message); setStatus("error"); }
+      } else {
+        setResult(r);
+        setErrMsg(r.error || "No Return of Capital or Non-Cash Distribution data found in this file. Verify this is the correct CDS Tax Breakdown spreadsheet.");
+        setStatus("error");
+      }
+    } catch (err) {
+      setErrMsg("Could not parse file: " + err.message);
+      setStatus("error");
+    }
+    if (fileRef.current) fileRef.current.value = "";
   };
 
   const doManual = () => {
@@ -349,26 +446,40 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
   };
 
   const disabled = sharesAtYearEnd <= 0 || appliedYears[String(selectedYear)];
+  const cdsUrl = selectedYear >= 2025 ? CDS_LINKS.current : CDS_LINKS.legacy;
 
   return (
     <div style={{ ...S.card, borderColor: "#312e81" }}>
       <div style={{ ...S.row, marginBottom: 8 }}><span style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>ETF Distributions — {symbol}</span><button onClick={onClose} style={{ background: "none", border: "none", color: "#6b7280", fontSize: 20, cursor: "pointer" }}>×</button></div>
-      <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 10 }}>CPM method · CDS.ca data</div>
+      <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 10 }}>CDS Tax Breakdown Service · cdsinnovations.ca</div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
-        <div><label style={S.label}>Tax Year</label><select value={selectedYear} onChange={e => { setSelectedYear(Number(e.target.value)); setStatus("idle"); setProposed([]); }} style={S.select}>{Array.from({ length: 10 }, (_, i) => new Date().getFullYear() - 1 - i).map(y => <option key={y} value={y}>{y}</option>)}</select></div>
+        <div><label style={S.label}>Tax Year</label><select value={selectedYear} onChange={e => { setSelectedYear(Number(e.target.value)); setStatus("idle"); setProposed([]); setErrMsg(""); }} style={S.select}>{Array.from({ length: 10 }, (_, i) => new Date().getFullYear() - 1 - i).map(y => <option key={y} value={y}>{y}</option>)}</select></div>
         <div><label style={S.label}>Shares at Year-End</label><div style={{ ...S.input, background: "#1a1f2e" }}>{sharesAtYearEnd.toLocaleString("en-CA", { maximumFractionDigits: 4 })}</div></div>
       </div>
       {appliedYears[String(selectedYear)] && <div style={{ background: "#1c1917", border: "1px solid #854d0e", borderRadius: 8, padding: 10, marginBottom: 10, fontSize: 13, color: "#fbbf24" }}>Already applied for {selectedYear}.</div>}
       {sharesAtYearEnd <= 0 && <div style={{ fontSize: 13, color: "#fbbf24", marginBottom: 10 }}>No shares held at end of {selectedYear}.</div>}
       {status !== "found" && status !== "applied" && (
         <div style={{ display: "flex", gap: 4, marginBottom: 12 }}>
-          <button onClick={() => { setMode("manual"); setStatus("idle"); setErrMsg(""); }} style={{ ...S.btnSm(mode === "manual" ? "#4f46e5" : "#252d3d"), flex: 1, border: mode === "manual" ? "none" : "1px solid #374151" }}>Manual (CDS.ca)</button>
-          <button onClick={() => { setMode("ai"); setStatus("idle"); setErrMsg(""); }} style={{ ...S.btnSm(mode === "ai" ? "#4f46e5" : "#252d3d"), flex: 1, border: mode === "ai" ? "none" : "1px solid #374151" }}>AI Search</button>
+          <button onClick={() => { setMode("upload"); setStatus("idle"); setErrMsg(""); }} style={{ ...S.btnSm(mode === "upload" ? "#4f46e5" : "#252d3d"), flex: 1, border: mode === "upload" ? "none" : "1px solid #374151" }}>Upload CDS File</button>
+          <button onClick={() => { setMode("manual"); setStatus("idle"); setErrMsg(""); }} style={{ ...S.btnSm(mode === "manual" ? "#4f46e5" : "#252d3d"), flex: 1, border: mode === "manual" ? "none" : "1px solid #374151" }}>Manual Entry</button>
+        </div>
+      )}
+      {mode === "upload" && status === "idle" && (
+        <div>
+          <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 10, lineHeight: 1.6 }}>
+            1. Visit <a href={cdsUrl} target="_blank" rel="noopener noreferrer" style={{ color: "#818cf8", textDecoration: "underline" }}>CDS Tax Breakdown Services</a> ({selectedYear >= 2025 ? "2025+" : "2024 & earlier"})<br />
+            2. Find your ETF and download the Excel (.xls) file<br />
+            3. Upload it below to auto-extract Return of Capital and Non-Cash Distribution
+          </div>
+          <label style={{ ...S.btn(disabled ? "#374151" : "#4f46e5"), display: "block", textAlign: "center", boxSizing: "border-box", opacity: disabled ? 0.4 : 1, cursor: disabled ? "default" : "pointer" }}>
+            Upload CDS Excel File
+            <input ref={fileRef} type="file" accept=".xls,.xlsx,.xlsm" onChange={handleFile} disabled={disabled} style={{ display: "none" }} />
+          </label>
         </div>
       )}
       {mode === "manual" && status === "idle" && (
         <div>
-          <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 10 }}>Enter per-unit amounts from CDS.ca Tax Breakdown Services.</div>
+          <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 10 }}>Enter per-unit amounts from <a href={cdsUrl} target="_blank" rel="noopener noreferrer" style={{ color: "#818cf8", textDecoration: "underline" }}>CDS Tax Breakdown Services</a>.</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
             <div><label style={S.label}>Reinvested Cap. Gains ($/unit)</label><input type="number" inputMode="decimal" step="any" value={manualNonCash} onChange={e => setManualNonCash(e.target.value)} style={S.input} placeholder="0.000000" /></div>
             <div><label style={S.label}>Return of Capital ($/unit)</label><input type="number" inputMode="decimal" step="any" value={manualROC} onChange={e => setManualROC(e.target.value)} style={S.input} placeholder="0.000000" /></div>
@@ -377,14 +488,17 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
           <button onClick={doManual} disabled={disabled} style={{ ...S.btn("#4f46e5"), opacity: disabled ? 0.4 : 1 }}>Calculate & Review</button>
         </div>
       )}
-      {mode === "ai" && status === "idle" && <button onClick={doFetch} disabled={disabled} style={{ ...S.btn("#4f46e5"), opacity: disabled ? 0.4 : 1 }}>Search for Distribution Data</button>}
-      {status === "loading" && <div style={{ textAlign: "center", padding: 20, color: "#818cf8", fontSize: 14 }}>Searching for {symbol} {selectedYear} data...</div>}
-      {status === "notfound" && <div style={{ background: "#1c1917", borderRadius: 8, padding: 12, fontSize: 13, color: "#fbbf24" }}>Not found. Try manual entry with CDS.ca data. {result?.sourceNotes}</div>}
-      {status === "noitems" && <div style={{ background: "#0c1222", borderRadius: 8, padding: 12, fontSize: 13, color: "#60a5fa" }}>No ACB-affecting components found for {selectedYear}.</div>}
-      {status === "error" && <div style={{ background: "#1c1017", borderRadius: 8, padding: 12, fontSize: 13, color: "#f87171" }}>Error: {errMsg}</div>}
+      {status === "loading" && <div style={{ textAlign: "center", padding: 20, color: "#818cf8", fontSize: 14 }}>Parsing CDS spreadsheet...</div>}
+      {status === "noitems" && <div style={{ background: "#0c1222", borderRadius: 8, padding: 12, fontSize: 13, color: "#60a5fa" }}>No ACB-affecting components (Return of Capital or Non-Cash Distribution) found in this file for {selectedYear}. The values may be zero, or this may be the wrong file.</div>}
+      {status === "error" && (
+        <div style={{ background: "#1c1017", borderRadius: 8, padding: 12, fontSize: 13, color: "#f87171", marginBottom: 8 }}>
+          {errMsg}
+          <div style={{ marginTop: 8 }}><button onClick={() => { setStatus("idle"); setErrMsg(""); }} style={{ ...S.btnSm("#374151"), fontSize: 12 }}>Try Again</button></div>
+        </div>
+      )}
       {status === "found" && proposed.length > 0 && (
         <div>
-          {result && <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 8 }}>{result.etfName} · {result.provider} · Confidence: <span style={{ color: result.confidence === "high" ? "#34d399" : "#fbbf24" }}>{result.confidence}</span></div>}
+          {result?.fundName && <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 8 }}>{result.fundName}{result.calcMethod === "percent" ? " (converted from %)" : ""}</div>}
           <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", marginBottom: 8 }}>Review Before Applying</div>
           {proposed.map(tx => (
             <div key={tx.id} style={S.txCard}>
@@ -709,26 +823,29 @@ My Portfolio,VFV.TO,2024-12-31,ROC,,,,125.00,Annual ROC`}</pre>
               ))}
             </div>
             <div style={S.card}>
-              <div style={{ fontSize: 15, fontWeight: 600, color: "#fff", marginBottom: 10 }}>ETF Distributions (CPM Method)</div>
+              <div style={{ fontSize: 15, fontWeight: 600, color: "#fff", marginBottom: 10 }}>ETF Distributions (CDS Tax Breakdown)</div>
               <div style={{ fontSize: 13, color: "#9ca3af", lineHeight: 1.7 }}>
-                Based on the <b style={{ color: "#60a5fa" }}>Canadian Portfolio Manager</b> blog method. Data source: <b style={{ color: "#60a5fa" }}>CDS.ca</b> (Canadian Depository for Securities) Tax Breakdown Services.
+                Data source: <b style={{ color: "#60a5fa" }}>CDS Innovations Inc.</b> Tax Breakdown Service (<a href="https://services.cds.ca/applications/taxforms/taxforms.nsf/Pages/-EN-LimitedPartnershipsandIncomeTrusts?Open" target="_blank" rel="noopener noreferrer" style={{ color: "#818cf8" }}>services.cds.ca</a>). This service consolidates tax breakdown data for all Canadian ETFs, REITs, and exchange-traded trusts as mandated by the Income Tax Act.
                 <br /><br />
-                <b style={{ color: "#e5e7eb" }}>Two key fields from CDS:</b><br />
-                &bull; <b style={{ color: "#22d3ee" }}>Reinvested Cap. Gains</b> ($/unit) — increases ACB<br />
+                <b style={{ color: "#e5e7eb" }}>Two key fields from CDS spreadsheets:</b><br />
+                &bull; <b style={{ color: "#22d3ee" }}>Total Non-Cash Distribution</b> ($/unit) — reinvested/phantom capital gains, increases ACB<br />
                 &bull; <b style={{ color: "#f472b6" }}>Return of Capital</b> ($/unit) — decreases ACB
                 <br /><br />
-                <b style={{ color: "#e5e7eb" }}>Manual entry (recommended):</b><br />
-                1. Go to <b style={{ color: "#60a5fa" }}>cdsinnovations.ca</b> &rarr; Tax Breakdown Services<br />
-                2. Search your ETF, select the tax year<br />
-                3. Note "Reinvested Capital Gains" and "Return of Capital" per unit<br />
-                4. In the app: security &rarr; <b style={{ color: "#818cf8" }}>Fetch ETF</b> &rarr; Manual (CDS.ca)<br />
-                5. Enter per-unit amounts &rarr; Calculate &amp; Review &rarr; Apply
+                <b style={{ color: "#e5e7eb" }}>Upload CDS File (recommended):</b><br />
+                1. Visit <b style={{ color: "#60a5fa" }}>CDS Tax Breakdown Services</b> (link provided in the panel)<br />
+                2. Find your ETF by name or CUSIP (note: ETFs are listed by fund name, not ticker)<br />
+                3. Download the Excel (.xls) file for your fund and tax year<br />
+                4. In the app: security &rarr; <b style={{ color: "#818cf8" }}>Fetch ETF</b> &rarr; Upload CDS File<br />
+                5. Upload the file — Return of Capital and Non-Cash Distribution are extracted automatically<br />
+                6. Review &rarr; Apply
                 <br /><br />
-                <b style={{ color: "#e5e7eb" }}>AI Search mode:</b> alternatively, tap AI Search to auto-find distribution data. Results may vary — always verify.
+                <b style={{ color: "#e5e7eb" }}>Manual entry:</b> alternatively, read the per-unit values from the CDS spreadsheet and enter them manually using the Manual Entry tab.
+                <br /><br />
+                <b style={{ color: "#e5e7eb" }}>BMO ETFs:</b> BMO reports distributions as percentages rather than dollar amounts. When uploading a BMO CDS file, the app automatically converts percentages to per-unit dollar amounts.
                 <br /><br />
                 <i>Note: DRIPs (reinvested distributions) are tracked separately as REINVESTED_DIST. Regular capital gains distributions (CAPITAL_GAINS_DIST) do not affect ACB. Only reinvested/non-cash capital gains (REINVESTED_CAP_GAINS) increase ACB.</i>
               </div>
-              <div style={{ background: "#1c1917", border: "1px solid #854d0e", borderRadius: 8, padding: 10, marginTop: 10, fontSize: 12, color: "#fbbf24" }}>Always verify against your T3/T5 slips.</div>
+              <div style={{ background: "#1c1917", border: "1px solid #854d0e", borderRadius: 8, padding: 10, marginTop: 10, fontSize: 12, color: "#fbbf24" }}>Always verify against your T3/T5 slips. CDS data is typically available before end of February.</div>
             </div>
           </div>
         )}
