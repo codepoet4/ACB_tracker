@@ -3,11 +3,11 @@ import * as Papa from "papaparse";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-const APP_VERSION = "1.3.1";
+const APP_VERSION = "1.4.0";
 const uid = () => Math.random().toString(36).slice(2, 10);
-const r2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
-const fmt = (n) => (n == null || isNaN(n)) ? "$0.00" : `$${Number(n).toLocaleString("en-CA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const fmtPrice = (n) => { const v = Number(n); if (n == null || isNaN(v)) return "$0.00"; const d = Math.abs(v) < 1 ? 5 : 2; return `$${v.toLocaleString("en-CA", { minimumFractionDigits: d, maximumFractionDigits: d })}`; };
+let _dp = 2;
+const fmt = (n) => { const v = (n != null && !isNaN(n)) ? Number(n) : 0; return `$${v.toLocaleString("en-CA", { minimumFractionDigits: _dp, maximumFractionDigits: _dp })}`; };
+const fmtPrice = (n) => { const v = Number(n); if (n == null || isNaN(v)) return fmt(0); const d = _dp > 2 ? _dp : (Math.abs(v) < 1 ? 5 : 2); return `$${v.toLocaleString("en-CA", { minimumFractionDigits: d, maximumFractionDigits: d })}`; };
 const shortSym = (s, max = 24) => s && s.length > max ? s.slice(0, max) + "\u2026" : s;
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -43,9 +43,9 @@ function computeACB(transactions) {
       case "SUPERFICIAL_LOSS": { const slAmt = amount || qty * price; totalACB += slAmt; note = "Denied loss → ACB"; break; }
       case "ACB_ADJUSTMENT": { const adjAmt = amount || qty * price; totalACB += adjAmt; if (totalACB < 0) { gainLoss = -totalACB; totalACB = 0; } break; }
     }
-    rows.push({ ...tx, runningShares: shares, runningACB: r2(totalACB), acbPerShare: shares > 0 ? r2(totalACB / shares) : 0, gainLoss, proceeds: txProceeds, dispositionACB: txDispositionACB, outlays: txOutlays, note: tx.note || note });
+    rows.push({ ...tx, runningShares: shares, runningACB: totalACB, acbPerShare: shares > 0 ? totalACB / shares : 0, gainLoss, proceeds: txProceeds, dispositionACB: txDispositionACB, outlays: txOutlays, note: tx.note || note });
   }
-  return { rows, totalShares: shares, totalACB: r2(totalACB), acbPerShare: shares > 0 ? r2(totalACB / shares) : 0 };
+  return { rows, totalShares: shares, totalACB: totalACB, acbPerShare: shares > 0 ? totalACB / shares : 0 };
 }
 
 const CSV_HEADERS = ["portfolio","symbol","date","type","shares","pricePerShare","commission","amount","note"];
@@ -155,12 +155,12 @@ function generateCapGainsReport(holdings, year) {
     for (const r of rows) if ((r.gainLoss != null || r.type === "STOCK_SPLIT") && r.date.startsWith(String(year)))
       allRows.push({ symbol: sym, date: r.date, type: r.type, shares: r.shares, proceeds: r.proceeds, dispositionACB: r.dispositionACB, outlays: r.outlays, gainLoss: r.gainLoss, acquisitionYear: acqYear, note: r.note });
   }
-  const g = r2(allRows.filter(r => r.gainLoss > 0).reduce((s, r) => s + r.gainLoss, 0));
-  const l = r2(allRows.filter(r => r.gainLoss < 0).reduce((s, r) => s + r.gainLoss, 0));
-  const tProceeds = r2(allRows.reduce((s, r) => s + (r.proceeds || 0), 0));
-  const tACB = r2(allRows.reduce((s, r) => s + (r.dispositionACB || 0), 0));
-  const tOutlays = r2(allRows.reduce((s, r) => s + (r.outlays || 0), 0));
-  return { rows: allRows, totalGains: g, totalLosses: l, net: r2(g + l), totalProceeds: tProceeds, totalACB: tACB, totalOutlays: tOutlays };
+  const g = allRows.filter(r => r.gainLoss > 0).reduce((s, r) => s + r.gainLoss, 0);
+  const l = allRows.filter(r => r.gainLoss < 0).reduce((s, r) => s + r.gainLoss, 0);
+  const tProceeds = allRows.reduce((s, r) => s + (r.proceeds || 0), 0);
+  const tACB = allRows.reduce((s, r) => s + (r.dispositionACB || 0), 0);
+  const tOutlays = allRows.reduce((s, r) => s + (r.outlays || 0), 0);
+  return { rows: allRows, totalGains: g, totalLosses: l, net: g + l, totalProceeds: tProceeds, totalACB: tACB, totalOutlays: tOutlays };
 }
 
 function exportSchedule3PDF(report, portfolioName, year) {
@@ -209,7 +209,7 @@ function exportSchedule3PDF(report, portfolioName, year) {
   doc.text(`Total Gains: ${f(report.totalGains)}`, 14, finalY);
   doc.text(`Total Losses: ${f(report.totalLosses)}`, 14, finalY + 6);
   doc.text(`Net Capital Gains (Losses): ${f(report.net)}`, 14, finalY + 12);
-  doc.text(`Taxable Capital Gains / Losses (50%): ${f(r2(report.net * 0.5))}`, 14, finalY + 18);
+  doc.text(`Taxable Capital Gains / Losses (50%): ${f(report.net * 0.5)}`, 14, finalY + 18);
 
   doc.save(`schedule3_${portfolioName.replace(/\s+/g, "_")}_${year}.pdf`);
 }
@@ -428,6 +428,8 @@ export default function ACBTracker() {
   const [delConfirm, setDelConfirm] = useState(null);
   const [showETF, setShowETF] = useState(false);
   const [showZero, setShowZero] = useState(false);
+  const [debugMode, setDebugMode] = useState(false);
+  _dp = debugMode ? 5 : 2;
 
   const portfolio = portfolios[activePIdx] || portfolios[0];
   const blankTx = { date: today(), type: "BUY", shares: "", pricePerShare: "", commission: "0", amount: "", note: "" };
@@ -476,7 +478,10 @@ export default function ACBTracker() {
       <div style={S.header}>
         <div style={S.row}>
           <div><div style={S.title}>ACB Tracker <span style={{ fontSize: 12, fontWeight: 400, color: "#6b7280" }}>v{APP_VERSION}</span></div><div style={S.subtitle}>Cost Base · Capital Gains · ETF Distributions</div></div>
-          <button onClick={() => setShowPMgr(true)} style={{ ...S.btnSm("#252d3d"), border: "1px solid #374151" }}>&#9881;</button>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={() => setDebugMode(d => !d)} style={{ ...S.btnSm(debugMode ? "#b45309" : "#252d3d"), border: `1px solid ${debugMode ? "#d97706" : "#374151"}`, fontSize: 11 }}>DBG</button>
+            <button onClick={() => setShowPMgr(true)} style={{ ...S.btnSm("#252d3d"), border: "1px solid #374151" }}>&#9881;</button>
+          </div>
         </div>
         {/* Portfolio selector */}
         <div style={{ marginTop: 10 }}>
@@ -641,7 +646,7 @@ export default function ACBTracker() {
                 </div>
                 <div style={{ ...S.card, marginTop: 12, fontSize: 13 }}>
                   <div style={{ color: "#9ca3af" }}>Taxable Capital Gains / Losses (50% inclusion)</div>
-                  <div style={{ fontSize: 18, fontWeight: 700, color: report.net >= 0 ? "#34d399" : "#f87171", marginTop: 4 }}>{fmt(r2(report.net * 0.5))}</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: report.net >= 0 ? "#34d399" : "#f87171", marginTop: 4 }}>{fmt(report.net * 0.5)}</div>
                 </div>
               </div>
             ) : <div style={{ textAlign: "center", padding: 32, color: "#6b7280" }}>No dispositions for {reportYear}</div>}
