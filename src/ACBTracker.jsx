@@ -1346,6 +1346,7 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
                     <span style={{ color: txColor(tx.type), fontWeight: 600, fontSize: 13 }}>{tx._comp}</span>
                     <span style={{ fontSize: 11, color: "#6b7280" }}>{tx.type === "ROC" ? "(decreases ACB)" : "(increases ACB)"}</span>
                     <span style={{ fontSize: 11, color: "#9ca3af", background: "#252d3d", borderRadius: 4, padding: "1px 6px" }}>{tx.date}</span>
+                    <span style={{ fontSize: 11, color: "#9ca3af", background: "#252d3d", borderRadius: 4, padding: "1px 6px" }}>{tx._shares ?? sharesAtYearEnd} shares</span>
                   </div>
                   <div style={{ fontSize: 16, fontWeight: 700, color: "#fff", marginTop: 2 }}>{fmt(Number(tx.amount))}</div>
                   <div style={{ fontSize: 11, color: "#6b7280" }}>${tx._perUnit}/unit × {tx._shares ?? sharesAtYearEnd} shares</div>
