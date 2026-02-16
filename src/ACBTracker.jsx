@@ -1005,18 +1005,19 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
       if (headerStr.startsWith("<!doctype") || headerStr.startsWith("<html") || headerStr.startsWith("<head")) {
         throw new Error(`The URL returned an HTML page instead of an Excel file. This fund's spreadsheet may not be hosted on CDS — try downloading it directly from the provider's website and using Upload mode.`);
       }
-      let r, mime;
-      if (headerStr.startsWith("%pdf")) {
+      // Create blob URL BEFORE parsing — pdf.js detaches the ArrayBuffer
+      const isPdf = headerStr.startsWith("%pdf");
+      const mime = isPdf ? "application/pdf" : "application/vnd.ms-excel";
+      if (sourceFileUrl.current) URL.revokeObjectURL(sourceFileUrl.current);
+      sourceFileUrl.current = URL.createObjectURL(new Blob([new Uint8Array(buf)], { type: mime }));
+      let r;
+      if (isPdf) {
         addLog("Detected PDF format. Parsing PDF...");
         r = await parseCDSPdf(buf, addLog);
-        mime = "application/pdf";
       } else {
         addLog("Parsing as Excel...");
         r = parseCDSExcel(buf);
-        mime = "application/vnd.ms-excel";
       }
-      if (sourceFileUrl.current) URL.revokeObjectURL(sourceFileUrl.current);
-      sourceFileUrl.current = URL.createObjectURL(new Blob([buf], { type: mime }));
       addLog(`Parse result: symbol="${r.symbol || "?"}", fundName="${r.fundName || "?"}", calcMethod=${r.calcMethod || "dollar"}`);
       addLog(`Per-unit: nonCash=${r.perUnit?.nonCashDistribution}, ROC=${r.perUnit?.returnOfCapital}`);
       applyResult(r);
