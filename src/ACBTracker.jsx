@@ -4,7 +4,7 @@ import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-const APP_VERSION = "1.5.5";
+const APP_VERSION = "1.5.6";
 const uid = () => Math.random().toString(36).slice(2, 10);
 let _dp = 2;
 const fmt = (n) => { const v = (n != null && !isNaN(n)) ? Number(n) : 0; return `$${v.toLocaleString("en-CA", { minimumFractionDigits: _dp, maximumFractionDigits: _dp })}`; };
@@ -364,17 +364,32 @@ function parseDominoTable(table, log, resolveUrl) {
     if (!cols || cols.length < 2) { rowsSkipped++; continue; }
     const cusipEl = row.querySelector("span.Cusip");
     const dateEl = row.querySelector("span.Date");
-    const linkEl = row.querySelector("a[href]");
-    if (!linkEl) { rowsNoLink++; continue; }
+    // Scan ALL links in the row — separate file download links from name/website links
+    const allLinks = Array.from(row.querySelectorAll("a[href]"));
+    if (allLinks.length === 0) { rowsNoLink++; continue; }
+    let downloadLink = null, nameLink = null;
+    for (const a of allLinks) {
+      const href = a.getAttribute("href") || "";
+      if (!href || href.startsWith("#") || href.startsWith("javascript")) continue;
+      if (isCdsFileLink(href)) {
+        downloadLink = a;
+      } else {
+        nameLink = a;
+      }
+    }
     const cusip = cusipEl ? cusipEl.textContent.trim() : "";
     const date = dateEl ? dateEl.textContent.trim() : "";
-    const href = linkEl.getAttribute("href") || "";
-    const name = linkEl.textContent.trim();
+    // Prefer name from the name/website link text, fall back to download link text
+    const name = (nameLink ? nameLink.textContent.trim() : "") || (downloadLink ? downloadLink.textContent.trim() : "") || allLinks[0].textContent.trim();
     if (!name && !cusip) continue;
+    // Use download link if available, otherwise fall back to the external link
+    const bestLink = downloadLink || nameLink || allLinks[0];
+    const href = bestLink.getAttribute("href") || "";
     const fullUrl = resolveUrl(href);
     const key = cusip || name;
-    // Classify: CDS-hosted file (auto-parse) vs external provider link (open in browser)
-    const fType = isCdsFileLink(href) ? (href.toLowerCase().endsWith(".pdf") ? "pdf" : "xls") : "link";
+    const fType = downloadLink
+      ? (href.toLowerCase().endsWith(".pdf") ? "pdf" : "xls")
+      : "link";
     if (fType === "link") rowsExternal++;
     if (!seen[key] || date > seen[key].date) { seen[key] = { cusip, name, date, xlsUrl: fullUrl, fileType: fType }; }
     rowsParsed++;
