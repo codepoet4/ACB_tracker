@@ -696,7 +696,6 @@ async function parseCDSPdf(data, onLog) {
 
   // Scan lines for fund info and distribution values
   let fundName = "", symbol = "", recordDate = "";
-  let totalDist = 0;
   let calcMethod = "dollar";
 
   // Known distribution component patterns → { label, type: "nonCash" | "roc" }
@@ -732,9 +731,11 @@ async function parseCDSPdf(data, onLog) {
     return [];
   };
 
-  // Collect individual components: { label, type, value }
-  const components = [];
-  let totalNonCashLine = 0; // from "Total Non-Cash Distribution" line as a check
+  // Collect raw numbers per component/row (one entry per distribution column)
+  // { label, type, nums: number[] }
+  const rawComponents = new Map(); // label → { type, nums[] }
+  let totalDistNums = [];     // from "total $/unit" line — all column values
+  let totalNonCashNums = [];  // from "total non-cash" line — all column values
 
   for (let i = 0; i < textLines.length; i++) {
     const line = textLines[i];
@@ -767,10 +768,14 @@ async function parseCDSPdf(data, onLog) {
     // Calculation method
     if (/calc.*method/i.test(lower) && /cent|%/i.test(lower)) calcMethod = "percent";
 
-    // Total distribution per unit (for percentage method)
+    // Total distribution per unit (for percentage method) — sum ALL columns
     if (/total.*distribut.*per\s*unit/i.test(lower) || /total\s*\$\s*\/\s*unit/i.test(lower)) {
-      const nums = extractNums(line);
-      if (nums.length > 0) totalDist = nums[0];
+      let nums = extractNums(line);
+      if (nums.length === 0) nums = extractNumsNext(i);
+      if (nums.length > 0) {
+        log(`  Total $/unit line ${i}: [${nums.join(", ")}]`);
+        totalDistNums.push(...nums);
+      }
     }
 
     // Total non-cash line (used as fallback if individual components not found)
@@ -780,7 +785,7 @@ async function parseCDSPdf(data, onLog) {
       if (nums.length === 0) nums = extractNumsNext(i);
       if (nums.length > 0) {
         log(`  Total non-cash line ${i}: [${nums.join(", ")}]`);
-        totalNonCashLine += nums.reduce((s, n) => s + n, 0);
+        totalNonCashNums.push(...nums);
       }
     }
 
@@ -788,47 +793,71 @@ async function parseCDSPdf(data, onLog) {
     for (const pat of COMPONENT_PATTERNS) {
       if (!pat.re.test(lower)) continue;
       if (pat.exclude && pat.exclude.test(lower)) continue;
-      // Skip if this is clearly a header/total line rather than a component row
       if (/total\s+non[-\s]?cash/i.test(lower)) continue;
       let nums = extractNums(line);
       if (nums.length === 0) nums = extractNumsNext(i);
       if (nums.length > 0) {
-        // Take the first number (per-unit value) — avoid summing multiple columns
-        const val = nums[0];
-        log(`  Component "${pat.label}" on line ${i}: ${val} (from [${nums.join(", ")}])`);
-        components.push({ label: pat.label, type: pat.type, value: val });
+        log(`  Component "${pat.label}" on line ${i}: [${nums.join(", ")}]`);
+        if (rawComponents.has(pat.label)) {
+          rawComponents.get(pat.label).nums.push(...nums);
+        } else {
+          rawComponents.set(pat.label, { type: pat.type, nums: [...nums] });
+        }
       }
       break; // Only match the first pattern per line
     }
   }
 
-  // Handle percentage method — convert component values to dollars
+  // Compute final values based on calculation method
+  const totalDist = totalDistNums.reduce((s, n) => s + n, 0);
+  const components = [];
+
   if (calcMethod === "percent" && totalDist > 0) {
-    for (const c of components) c.value = (c.value / 100) * totalDist;
-    totalNonCashLine = (totalNonCashLine / 100) * totalDist;
+    // Percentage method: each component row has the same % repeated per column.
+    // Take first value as the percentage, multiply by annual total $/unit.
+    for (const [label, { type, nums }] of rawComponents) {
+      const pct = nums[0];
+      const value = (pct / 100) * totalDist;
+      log(`  ${label}: ${pct}% × $${totalDist} total $/unit = $${value}`);
+      components.push({ label, type, value });
+    }
+  } else {
+    // Dollar method: sum all column values to get annual per-unit total.
+    for (const [label, { type, nums }] of rawComponents) {
+      const value = nums.reduce((s, n) => s + n, 0);
+      log(`  ${label}: sum([${nums.join(", ")}]) = $${value}`);
+      components.push({ label, type, value });
+    }
   }
 
-  // If no individual components were found, fall back to the old totals approach
-  if (components.length === 0 && totalNonCashLine > 0) {
+  // Fallback: if no individual components found, use total non-cash line
+  if (components.length === 0 && totalNonCashNums.length > 0) {
     log("No individual components found, using total non-cash line as fallback");
-    components.push({ label: "Non-Cash Distribution", type: "nonCash", value: totalNonCashLine });
+    let totalNonCash;
+    if (calcMethod === "percent" && totalDist > 0) {
+      totalNonCash = (totalNonCashNums[0] / 100) * totalDist;
+    } else {
+      totalNonCash = totalNonCashNums.reduce((s, n) => s + n, 0);
+    }
+    components.push({ label: "Non-Cash Distribution", type: "nonCash", value: totalNonCash });
   }
 
   // Round values
   for (const c of components) c.value = Math.round(c.value * 1e6) / 1e6;
 
-  // Compute totals for the legacy perUnit fields
+  // Compute totals
   const totalNonCash = components.filter(c => c.type === "nonCash").reduce((s, c) => s + c.value, 0);
   const totalROC = components.filter(c => c.type === "roc").reduce((s, c) => s + c.value, 0);
 
   log(`PDF parse: fundName="${fundName}", symbol="${symbol}", calcMethod=${calcMethod}`);
+  log(`PDF parse: totalDist $/unit=${totalDist} (from ${totalDistNums.length} columns)`);
   log(`PDF parse: ${components.length} components found:`);
-  for (const c of components) log(`  ${c.label}: ${c.value} (${c.type})`);
+  for (const c of components) log(`  ${c.label}: $${c.value} (${c.type})`);
   log(`PDF parse: totalNonCash=${totalNonCash}, totalROC=${totalROC}, recordDate=${recordDate}`);
 
-  // Log all lines for debugging
-  log(`All PDF lines (first 50):`);
-  for (const l of textLines.slice(0, 50)) log(`  [y=${l.y}] "${l.text}"`);
+  // Log all PDF lines for debugging
+  log(`All PDF lines (first 60):`);
+  for (const l of textLines.slice(0, 60)) log(`  [p${l.page} y=${l.y}] "${l.text}"`);
 
   return {
     found: totalNonCash > 0 || totalROC > 0,
