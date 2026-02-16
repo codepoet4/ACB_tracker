@@ -662,8 +662,8 @@ async function parseCDSPdf(data, onLog) {
   const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(data) }).promise;
   log(`PDF: ${pdf.numPages} page(s)`);
 
-  // Extract text from all pages, preserving layout as rows with positioned items
-  const allItems = []; // { page, y, x, text }
+  // ── Step 1: Extract all text items with page/x/y positions ──
+  const allItems = [];
   for (let p = 1; p <= pdf.numPages; p++) {
     const page = await pdf.getPage(p);
     const tc = await page.getTextContent();
@@ -673,32 +673,28 @@ async function parseCDSPdf(data, onLog) {
     }
   }
 
-  // Group items into lines (same page + Y within tolerance of 5px)
+  // ── Step 2: Group items into rows (same page + Y within 5px) ──
   allItems.sort((a, b) => a.page - b.page || b.y - a.y || a.x - b.x);
-  const lines = [];
-  let curLine = null;
+  const rows = [];
+  let curRow = null;
   for (const item of allItems) {
-    if (!curLine || curLine.page !== item.page || Math.abs(curLine.y - item.y) > 5) {
-      curLine = { page: item.page, y: item.y, items: [] };
-      lines.push(curLine);
+    if (!curRow || curRow.page !== item.page || Math.abs(curRow.y - item.y) > 5) {
+      curRow = { page: item.page, y: item.y, items: [] };
+      rows.push(curRow);
     }
-    curLine.items.push(item);
+    curRow.items.push(item);
   }
-  // Build text for each line, and keep separate items for value extraction
-  const textLines = lines.map(l => {
-    l.items.sort((a, b) => a.x - b.x);
-    l.text = l.items.map(i => i.text).join(" ");
-    return l;
-  });
+  for (const r of rows) {
+    r.items.sort((a, b) => a.x - b.x);
+    r.text = r.items.map(i => i.text).join(" ");
+  }
 
-  log(`Extracted ${textLines.length} text lines from PDF`);
-  if (textLines.length > 0) log(`First 5 lines: ${textLines.slice(0, 5).map(l => l.text).join(" | ")}`);
+  log(`Extracted ${rows.length} text rows from PDF`);
+  if (rows.length > 0) log(`First 5 rows: ${rows.slice(0, 5).map(l => l.text).join(" | ")}`);
 
-  // Scan lines for fund info and distribution values
-  let fundName = "", symbol = "", recordDate = "";
-  let calcMethod = "dollar";
+  // ── Step 3: Extract metadata (fund name, symbol, calc method) ──
+  let fundName = "", symbol = "", calcMethod = "dollar";
 
-  // Known distribution component patterns → { label, type: "nonCash" | "roc" }
   const COMPONENT_PATTERNS = [
     { re: /eligible\s+dividends?/i,                           label: "Eligible Dividends",          type: "nonCash" },
     { re: /foreign\s+(?:non[-\s]?business\s+)?income/i,       label: "Foreign Non-Business Income",  type: "nonCash" },
@@ -709,160 +705,204 @@ async function parseCDSPdf(data, onLog) {
     { re: /cost\s+base\s+adjust/i,                            label: "Cost Base Adjustment",         type: "roc" },
   ];
 
-  // Extract numbers from a line — handles decimals, integers, $, %
-  const extractNums = (line) => {
-    const nums = [];
-    for (const item of line.items) {
+  // Helper: extract positioned numeric items from a row as { x, value } pairs
+  const extractNumItems = (row) => {
+    const out = [];
+    for (const item of row.items) {
       const cleaned = item.text.replace(/[$%,]/g, "").trim();
       const m = cleaned.match(/^-?\d+(?:\.\d+)?$/);
-      if (m) nums.push(Number(m[0]));
+      if (m) out.push({ x: item.x, value: Number(m[0]) });
     }
-    // Fallback: scan full line text
-    if (nums.length === 0) {
-      const m = line.text.match(/-?\d+(?:\.\d+)?/g);
-      if (m) return m.map(Number);
-    }
-    return nums;
+    return out;
   };
 
-  // Extract numbers from the next line (for labels where values are on the row below)
-  const extractNumsNext = (idx) => {
-    if (idx + 1 < textLines.length) return extractNums(textLines[idx + 1]);
-    return [];
+  // Helper: extract date items as { x, date } pairs
+  const extractDateItems = (row) => {
+    const out = [];
+    for (const item of row.items) {
+      const m = item.text.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+      if (m) out.push({ x: item.x, date: `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}` });
+    }
+    return out;
   };
 
-  // Collect raw numbers per component/row (one entry per distribution column)
-  // { label, type, nums: number[] }
-  const rawComponents = new Map(); // label → { type, nums[] }
-  let totalDistNums = [];     // from "total $/unit" line — all column values
-  let totalNonCashNums = [];  // from "total non-cash" line — all column values
+  // ── Step 4: Identify column structure from the record date row ──
+  // columns[] = { x, recordDate } — one per distribution period
+  let columns = [];
+  let recordDateRowIdx = -1;
+  // Also collect row data for component/total rows keyed by row index
+  let totalDistRow = null;    // "total $/unit" row
+  let totalNonCashRow = null; // "total non-cash" row
+  const componentRows = [];   // { label, type, rowIdx }
 
-  for (let i = 0; i < textLines.length; i++) {
-    const line = textLines[i];
-    const text = line.text;
-    const lower = text.toLowerCase();
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const lower = row.text.toLowerCase();
 
-    // Fund name: typically a long line in the header area
-    if (!fundName && i < 20 && text.length > 15
-      && !/cds|tax breakdown|limited partner|income trust|page\s*\d|date|cusip|record|payment|calc/i.test(text)) {
-      fundName = text;
+    if (!fundName && i < 20 && row.text.length > 15
+      && !/cds|tax breakdown|limited partner|income trust|page\s*\d|date|cusip|record|payment|calc/i.test(row.text)) {
+      fundName = row.text;
     }
-
-    // Symbol (ticker)
     if (!symbol && /symbol|ticker/i.test(lower)) {
-      const m = text.match(/[A-Z]{2,10}(?:\.[A-Z])?/);
+      const m = row.text.match(/[A-Z]{2,10}(?:\.[A-Z])?/);
       if (m) symbol = m[0];
     }
-
-    // Record date
-    if (/record\s*date/i.test(lower)) {
-      const m = text.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-      if (m) recordDate = `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
-      else {
-        const nextText = i + 1 < textLines.length ? textLines[i + 1].text : "";
-        const m2 = nextText.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-        if (m2) recordDate = `${m2[1]}-${m2[2].padStart(2, "0")}-${m2[3].padStart(2, "0")}`;
-      }
-    }
-
-    // Calculation method
     if (/calc.*method/i.test(lower) && /cent|%/i.test(lower)) calcMethod = "percent";
 
-    // Total distribution per unit (for percentage method) — sum ALL columns
+    // Record date row — extract all dates with their X positions
+    if (/record\s*date/i.test(lower)) {
+      let dateItems = extractDateItems(row);
+      // Dates might be on the next row if this row is just the label
+      if (dateItems.length === 0 && i + 1 < rows.length) dateItems = extractDateItems(rows[i + 1]);
+      if (dateItems.length > 0) {
+        columns = dateItems.map(d => ({ x: d.x, recordDate: d.date }));
+        recordDateRowIdx = i;
+        log(`  Record dates found on row ${i}: ${columns.map(c => `${c.recordDate} @x=${c.x}`).join(", ")}`);
+      }
+    }
+
+    // Total distribution per unit row
     if (/total.*distribut.*per\s*unit/i.test(lower) || /total\s*\$\s*\/\s*unit/i.test(lower)) {
-      let nums = extractNums(line);
-      if (nums.length === 0) nums = extractNumsNext(i);
-      if (nums.length > 0) {
-        log(`  Total $/unit line ${i}: [${nums.join(", ")}]`);
-        totalDistNums.push(...nums);
-      }
+      totalDistRow = i;
     }
 
-    // Total non-cash line (used as fallback if individual components not found)
-    if ((/non[-\s]?cash/i.test(lower) && /total|dist/i.test(lower))
-      || (/total.*non[-\s]?cash/i.test(lower))) {
-      let nums = extractNums(line);
-      if (nums.length === 0) nums = extractNumsNext(i);
-      if (nums.length > 0) {
-        log(`  Total non-cash line ${i}: [${nums.join(", ")}]`);
-        totalNonCashNums.push(...nums);
-      }
+    // Total non-cash row (fallback)
+    if ((/non[-\s]?cash/i.test(lower) && /total|dist/i.test(lower)) || /total.*non[-\s]?cash/i.test(lower)) {
+      totalNonCashRow = i;
     }
 
-    // Match individual distribution components
+    // Component rows
     for (const pat of COMPONENT_PATTERNS) {
       if (!pat.re.test(lower)) continue;
       if (pat.exclude && pat.exclude.test(lower)) continue;
       if (/total\s+non[-\s]?cash/i.test(lower)) continue;
-      let nums = extractNums(line);
-      if (nums.length === 0) nums = extractNumsNext(i);
-      if (nums.length > 0) {
-        log(`  Component "${pat.label}" on line ${i}: [${nums.join(", ")}]`);
-        if (rawComponents.has(pat.label)) {
-          rawComponents.get(pat.label).nums.push(...nums);
-        } else {
-          rawComponents.set(pat.label, { type: pat.type, nums: [...nums] });
-        }
-      }
-      break; // Only match the first pattern per line
+      componentRows.push({ label: pat.label, type: pat.type, rowIdx: i });
+      break;
     }
   }
 
-  // Compute final values based on calculation method
-  const totalDist = totalDistNums.reduce((s, n) => s + n, 0);
-  const components = [];
+  // Helper: match a numeric item to the nearest column by X position (within tolerance)
+  const matchToColumn = (numItems, cols) => {
+    const values = new Array(cols.length).fill(0);
+    for (const ni of numItems) {
+      let bestIdx = -1, bestDist = Infinity;
+      for (let c = 0; c < cols.length; c++) {
+        const dist = Math.abs(ni.x - cols[c].x);
+        if (dist < bestDist) { bestDist = dist; bestIdx = c; }
+      }
+      if (bestIdx >= 0 && bestDist < 80) values[bestIdx] = ni.value;
+    }
+    return values;
+  };
 
-  if (calcMethod === "percent" && totalDist > 0) {
-    // Percentage method: each component row has the same % repeated per column.
-    // Take first value as the percentage, multiply by annual total $/unit.
-    for (const [label, { type, nums }] of rawComponents) {
-      const pct = nums[0];
-      const value = (pct / 100) * totalDist;
-      log(`  ${label}: ${pct}% × $${totalDist} total $/unit = $${value}`);
-      components.push({ label, type, value });
+  // ── Step 5: Extract per-column values for each component ──
+  // Result: distributions[] = { label, type, recordDate, value }
+  const distributions = [];
+
+  if (columns.length > 0) {
+    // Get total $/unit per column (needed for percentage conversion)
+    let totalDistPerCol = new Array(columns.length).fill(0);
+    if (totalDistRow !== null) {
+      const numItems = extractNumItems(rows[totalDistRow]);
+      if (numItems.length === 0 && totalDistRow + 1 < rows.length) {
+        totalDistPerCol = matchToColumn(extractNumItems(rows[totalDistRow + 1]), columns);
+      } else {
+        totalDistPerCol = matchToColumn(numItems, columns);
+      }
+      log(`  Total $/unit per column: [${totalDistPerCol.join(", ")}]`);
+    }
+
+    for (const cr of componentRows) {
+      const numItems = extractNumItems(rows[cr.rowIdx]);
+      let colValues = matchToColumn(numItems.length > 0 ? numItems : (cr.rowIdx + 1 < rows.length ? extractNumItems(rows[cr.rowIdx + 1]) : []), columns);
+      log(`  ${cr.label} raw per column: [${colValues.join(", ")}]`);
+
+      for (let c = 0; c < columns.length; c++) {
+        let val = colValues[c];
+        if (val === 0) continue;
+        // Convert percentage to dollars for this specific column
+        if (calcMethod === "percent" && totalDistPerCol[c] > 0) {
+          val = (val / 100) * totalDistPerCol[c];
+        }
+        distributions.push({
+          label: cr.label, type: cr.type,
+          recordDate: columns[c].recordDate,
+          value: Math.round(val * 1e6) / 1e6,
+        });
+      }
+    }
+
+    // Fallback: if no individual components but total non-cash row exists
+    if (componentRows.length === 0 && totalNonCashRow !== null) {
+      const numItems = extractNumItems(rows[totalNonCashRow]);
+      const colValues = matchToColumn(numItems.length > 0 ? numItems : (totalNonCashRow + 1 < rows.length ? extractNumItems(rows[totalNonCashRow + 1]) : []), columns);
+      for (let c = 0; c < columns.length; c++) {
+        let val = colValues[c];
+        if (val === 0) continue;
+        if (calcMethod === "percent" && totalDistPerCol[c] > 0) val = (val / 100) * totalDistPerCol[c];
+        distributions.push({ label: "Non-Cash Distribution", type: "nonCash", recordDate: columns[c].recordDate, value: Math.round(val * 1e6) / 1e6 });
+      }
     }
   } else {
-    // Dollar method: sum all column values to get annual per-unit total.
-    for (const [label, { type, nums }] of rawComponents) {
-      const value = nums.reduce((s, n) => s + n, 0);
-      log(`  ${label}: sum([${nums.join(", ")}]) = $${value}`);
-      components.push({ label, type, value });
+    // No column structure detected — fall back to flat extraction
+    log("WARNING: No column structure detected (no record date row with dates). Falling back to flat extraction.");
+    const extractNums = (row) => {
+      const nums = [];
+      for (const item of row.items) {
+        const cleaned = item.text.replace(/[$%,]/g, "").trim();
+        const m = cleaned.match(/^-?\d+(?:\.\d+)?$/);
+        if (m) nums.push(Number(m[0]));
+      }
+      if (nums.length === 0) { const m = row.text.match(/-?\d+(?:\.\d+)?/g); if (m) return m.map(Number); }
+      return nums;
+    };
+    let fallbackDate = "";
+    for (const row of rows) {
+      if (/record\s*date/i.test(row.text.toLowerCase())) {
+        const m = row.text.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+        if (m) fallbackDate = `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+      }
+    }
+    let totalDist = 0;
+    if (totalDistRow !== null) {
+      const nums = extractNums(rows[totalDistRow]);
+      if (nums.length > 0) totalDist = nums.reduce((s, n) => s + n, 0);
+    }
+    for (const cr of componentRows) {
+      const nums = extractNums(rows[cr.rowIdx]);
+      if (nums.length === 0) continue;
+      let val = nums.reduce((s, n) => s + n, 0);
+      if (calcMethod === "percent" && totalDist > 0) val = (nums[0] / 100) * totalDist;
+      distributions.push({ label: cr.label, type: cr.type, recordDate: fallbackDate, value: Math.round(val * 1e6) / 1e6 });
+    }
+    if (componentRows.length === 0 && totalNonCashRow !== null) {
+      const nums = extractNums(rows[totalNonCashRow]);
+      if (nums.length > 0) {
+        let val = nums.reduce((s, n) => s + n, 0);
+        if (calcMethod === "percent" && totalDist > 0) val = (nums[0] / 100) * totalDist;
+        distributions.push({ label: "Non-Cash Distribution", type: "nonCash", recordDate: fallbackDate, value: Math.round(val * 1e6) / 1e6 });
+      }
     }
   }
 
-  // Fallback: if no individual components found, use total non-cash line
-  if (components.length === 0 && totalNonCashNums.length > 0) {
-    log("No individual components found, using total non-cash line as fallback");
-    let totalNonCash;
-    if (calcMethod === "percent" && totalDist > 0) {
-      totalNonCash = (totalNonCashNums[0] / 100) * totalDist;
-    } else {
-      totalNonCash = totalNonCashNums.reduce((s, n) => s + n, 0);
-    }
-    components.push({ label: "Non-Cash Distribution", type: "nonCash", value: totalNonCash });
-  }
-
-  // Round values
-  for (const c of components) c.value = Math.round(c.value * 1e6) / 1e6;
-
-  // Compute totals
-  const totalNonCash = components.filter(c => c.type === "nonCash").reduce((s, c) => s + c.value, 0);
-  const totalROC = components.filter(c => c.type === "roc").reduce((s, c) => s + c.value, 0);
+  const totalNonCash = distributions.filter(d => d.type === "nonCash").reduce((s, d) => s + d.value, 0);
+  const totalROC = distributions.filter(d => d.type === "roc").reduce((s, d) => s + d.value, 0);
 
   log(`PDF parse: fundName="${fundName}", symbol="${symbol}", calcMethod=${calcMethod}`);
-  log(`PDF parse: totalDist $/unit=${totalDist} (from ${totalDistNums.length} columns)`);
-  log(`PDF parse: ${components.length} components found:`);
-  for (const c of components) log(`  ${c.label}: $${c.value} (${c.type})`);
-  log(`PDF parse: totalNonCash=${totalNonCash}, totalROC=${totalROC}, recordDate=${recordDate}`);
+  log(`PDF parse: ${columns.length} columns, ${distributions.length} distribution entries:`);
+  for (const d of distributions) log(`  ${d.recordDate} | ${d.label}: $${d.value} (${d.type})`);
+  log(`PDF parse: totalNonCash=${totalNonCash}, totalROC=${totalROC}`);
 
-  // Log all PDF lines for debugging
-  log(`All PDF lines (first 60):`);
-  for (const l of textLines.slice(0, 60)) log(`  [p${l.page} y=${l.y}] "${l.text}"`);
+  // Log all rows for debugging
+  log(`All PDF rows (first 60):`);
+  for (const r of rows.slice(0, 60)) log(`  [p${r.page} y=${r.y}] "${r.text}"`);
 
   return {
-    found: totalNonCash > 0 || totalROC > 0,
-    symbol, fundName, calcMethod, recordDate,
-    components,
+    found: distributions.length > 0,
+    symbol, fundName, calcMethod,
+    distributions,
+    // Legacy fields
+    recordDate: columns.length > 0 ? columns[columns.length - 1].recordDate : "",
     perUnit: { nonCashDistribution: Math.round(totalNonCash * 1e6) / 1e6, returnOfCapital: Math.round(totalROC * 1e6) / 1e6 },
   };
 }
@@ -975,39 +1015,39 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
     return computeACB(txs).totalShares;
   }, [holdings]);
 
-  const buildProposed = (components, recordDate) => {
-    const txs = [], d = recordDate || `${selectedYear}-12-31`;
-    const shares = sharesAtDate(d);
-    for (const c of components) {
-      if (c.value <= 0) continue;
-      const isROC = c.type === "roc";
+  const buildFromDistributions = (distributions) => {
+    const txs = [];
+    for (const d of distributions) {
+      if (d.value <= 0) continue;
+      const date = d.recordDate || `${selectedYear}-12-31`;
+      const shares = sharesAtDate(date);
+      const isROC = d.type === "roc";
       txs.push({
-        id: uid(), date: d,
+        id: uid(), date,
         type: isROC ? "ROC" : "REINVESTED_CAP_GAINS",
-        shares, pricePerShare: c.value, commission: "0",
-        amount: Math.round(c.value * shares * 1e6) / 1e6,
-        note: `[CDS ${selectedYear}] ${c.label} $${c.value}/u \u00d7 ${shares}`,
-        _perUnit: c.value, _shares: shares, _comp: c.label,
+        shares, pricePerShare: d.value, commission: "0",
+        amount: Math.round(d.value * shares * 1e6) / 1e6,
+        note: `[CDS ${selectedYear}] ${d.label} $${d.value}/u \u00d7 ${shares}`,
+        _perUnit: d.value, _shares: shares, _comp: d.label,
       });
     }
     return txs;
   };
 
-  // Legacy helper for manual entry (no individual components)
-  const buildProposedLegacy = (nonCashPerUnit, rocPerUnit, recordDate) => {
-    const components = [];
-    if (nonCashPerUnit > 0) components.push({ label: "Reinvested Cap. Gains", type: "nonCash", value: nonCashPerUnit });
-    if (rocPerUnit > 0) components.push({ label: "Return of Capital", type: "roc", value: rocPerUnit });
-    return buildProposed(components, recordDate);
+  // Helper for manual entry (no per-column data)
+  const buildFromManual = (nonCashPerUnit, rocPerUnit, recordDate) => {
+    const dists = [];
+    if (nonCashPerUnit > 0) dists.push({ label: "Reinvested Cap. Gains", type: "nonCash", value: nonCashPerUnit, recordDate });
+    if (rocPerUnit > 0) dists.push({ label: "Return of Capital", type: "roc", value: rocPerUnit, recordDate });
+    return buildFromDistributions(dists);
   };
 
   const applyResult = (r) => {
     if (r.found) {
       setResult(r);
-      // Prefer individual components if available, fall back to per-unit totals
-      const txs = r.components && r.components.length > 0
-        ? buildProposed(r.components, r.recordDate || null)
-        : buildProposedLegacy(r.perUnit?.nonCashDistribution || 0, r.perUnit?.returnOfCapital || 0, r.recordDate || null);
+      const txs = r.distributions && r.distributions.length > 0
+        ? buildFromDistributions(r.distributions)
+        : buildFromManual(r.perUnit?.nonCashDistribution || 0, r.perUnit?.returnOfCapital || 0, r.recordDate || null);
       setProposed(txs);
       setStatus(txs.length > 0 ? "found" : "noitems");
     } else {
@@ -1144,7 +1184,7 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
     if (appliedYears[String(selectedYear)]) return;
     const nc = parseFloat(manualNonCash) || 0, roc = parseFloat(manualROC) || 0;
     if (nc === 0 && roc === 0) { setErrMsg("Enter at least one per-unit amount."); setStatus("error"); return; }
-    const txs = buildProposedLegacy(nc, roc, manualDate || `${selectedYear}-12-31`);
+    const txs = buildFromManual(nc, roc, manualDate || `${selectedYear}-12-31`);
     setProposed(txs);
     setStatus("found");
   };
@@ -1302,10 +1342,13 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
             <div key={tx.id} style={S.txCard}>
               <div style={S.row}>
                 <div>
-                  <span style={{ color: txColor(tx.type), fontWeight: 600, fontSize: 13 }}>{tx._comp}</span>
-                  <span style={{ fontSize: 11, color: "#6b7280", marginLeft: 6 }}>{tx.type === "ROC" ? "(decreases ACB)" : "(increases ACB)"}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    <span style={{ color: txColor(tx.type), fontWeight: 600, fontSize: 13 }}>{tx._comp}</span>
+                    <span style={{ fontSize: 11, color: "#6b7280" }}>{tx.type === "ROC" ? "(decreases ACB)" : "(increases ACB)"}</span>
+                    <span style={{ fontSize: 11, color: "#9ca3af", background: "#252d3d", borderRadius: 4, padding: "1px 6px" }}>{tx.date}</span>
+                  </div>
                   <div style={{ fontSize: 16, fontWeight: 700, color: "#fff", marginTop: 2 }}>{fmt(Number(tx.amount))}</div>
-                  <div style={{ fontSize: 11, color: "#6b7280" }}>${tx._perUnit}/unit × {tx._shares ?? sharesAtYearEnd} shares{tx.date !== `${selectedYear}-12-31` ? ` (as of ${tx.date})` : ""}</div>
+                  <div style={{ fontSize: 11, color: "#6b7280" }}>${tx._perUnit}/unit × {tx._shares ?? sharesAtYearEnd} shares</div>
                 </div>
                 <button onClick={() => setProposed(p => p.filter(t => t.id !== tx.id))} style={{ background: "none", border: "none", color: "#6b7280", fontSize: 18, cursor: "pointer" }}>✕</button>
               </div>
