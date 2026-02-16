@@ -7,7 +7,7 @@ import * as pdfjsLib from "pdfjs-dist";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
-const APP_VERSION = "1.6.5";
+const APP_VERSION = "1.6.6";
 const uid = () => Math.random().toString(36).slice(2, 10);
 let _dp = 2;
 const fmt = (n) => { const v = (n != null && !isNaN(n)) ? Number(n) : 0; return `$${v.toLocaleString("en-CA", { minimumFractionDigits: _dp, maximumFractionDigits: _dp })}`; };
@@ -893,7 +893,11 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
   const [logs, setLogs] = useState([]);
   const [showLogs, setShowLogs] = useState(false);
   const fileRef = useRef(null);
+  const sourceFileUrl = useRef(null);
   const addLog = (msg) => setLogs(prev => [...prev, { time: new Date().toLocaleTimeString(), msg }]);
+
+  // Clean up blob URL on unmount
+  useEffect(() => () => { if (sourceFileUrl.current) URL.revokeObjectURL(sourceFileUrl.current); }, []);
 
   const appliedYears = useMemo(() => {
     const s = {};
@@ -1001,14 +1005,18 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
       if (headerStr.startsWith("<!doctype") || headerStr.startsWith("<html") || headerStr.startsWith("<head")) {
         throw new Error(`The URL returned an HTML page instead of an Excel file. This fund's spreadsheet may not be hosted on CDS — try downloading it directly from the provider's website and using Upload mode.`);
       }
-      let r;
+      let r, mime;
       if (headerStr.startsWith("%pdf")) {
         addLog("Detected PDF format. Parsing PDF...");
         r = await parseCDSPdf(buf, addLog);
+        mime = "application/pdf";
       } else {
         addLog("Parsing as Excel...");
         r = parseCDSExcel(buf);
+        mime = "application/vnd.ms-excel";
       }
+      if (sourceFileUrl.current) URL.revokeObjectURL(sourceFileUrl.current);
+      sourceFileUrl.current = URL.createObjectURL(new Blob([buf], { type: mime }));
       addLog(`Parse result: symbol="${r.symbol || "?"}", fundName="${r.fundName || "?"}", calcMethod=${r.calcMethod || "dollar"}`);
       addLog(`Per-unit: nonCash=${r.perUnit?.nonCashDistribution}, ROC=${r.perUnit?.returnOfCapital}`);
       applyResult(r);
@@ -1035,6 +1043,8 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
     setStatus("loading"); setResult(null); setProposed([]); setErrMsg("");
     try {
       const buf = await file.arrayBuffer();
+      if (sourceFileUrl.current) URL.revokeObjectURL(sourceFileUrl.current);
+      sourceFileUrl.current = URL.createObjectURL(file);
       const hdr = new TextDecoder("utf-8", { fatal: false }).decode(new Uint8Array(buf.slice(0, 10))).trim();
       if (hdr.startsWith("%PDF") || file.name.toLowerCase().endsWith(".pdf")) {
         applyResult(await parseCDSPdf(buf));
@@ -1222,6 +1232,7 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
           ))}
           <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
             <button onClick={() => { onAdd(proposed); setStatus("applied"); }} style={{ ...S.btn("#059669"), flex: 1 }}>Apply {proposed.length} {proposed.length > 1 ? "Entries" : "Entry"}</button>
+            {sourceFileUrl.current && <button onClick={() => window.open(sourceFileUrl.current, "_blank")} style={{ ...S.btn("#4f46e5"), flex: 0, minWidth: 80 }}>View Source</button>}
             <button onClick={() => { setStatus("idle"); setProposed([]); }} style={{ ...S.btn("#374151"), flex: 0, minWidth: 80 }}>Cancel</button>
           </div>
         </div>
