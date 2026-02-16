@@ -732,8 +732,9 @@ async function parseCDSPdf(data, onLog) {
   let recordDateRowIdx = -1;
   // Also collect row data for component/total rows keyed by row index
   let totalDistRow = null;    // "total $/unit" row
-  let totalNonCashRow = null; // "total non-cash" row
-  const componentRows = [];   // { label, type, rowIdx }
+  let totalNonCashRow = null; // "total non-cash distributions" row
+  let rocRow = null;          // "return of capital" row
+  const componentRows = [];   // { label, type, rowIdx } — for logging only
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
@@ -766,12 +767,17 @@ async function parseCDSPdf(data, onLog) {
       totalDistRow = i;
     }
 
-    // Total non-cash row (fallback)
+    // Total non-cash distributions row
     if ((/non[-\s]?cash/i.test(lower) && /total|dist/i.test(lower)) || /total.*non[-\s]?cash/i.test(lower)) {
       totalNonCashRow = i;
     }
 
-    // Component rows
+    // Return of capital data row
+    if (/return\s+of\s+capital/i.test(lower) && !/total\s+return/i.test(lower) && !/total\s+non[-\s]?cash/i.test(lower)) {
+      rocRow = i;
+    }
+
+    // Component rows (for logging only)
     for (const pat of COMPONENT_PATTERNS) {
       if (!pat.re.test(lower)) continue;
       if (pat.exclude && pat.exclude.test(lower)) continue;
@@ -795,52 +801,60 @@ async function parseCDSPdf(data, onLog) {
     return values;
   };
 
-  // ── Step 5: Extract per-column values for each component ──
+  // ── Step 5: Extract per-column values from "Total Non Cash Distributions" and "Return of Capital" rows ──
+  // Only these two rows matter for ACB-affecting transactions. Individual component breakdowns are ignored.
   // Result: distributions[] = { label, type, recordDate, value }
   const distributions = [];
+
+  log(`  Key rows: recordDate=${recordDateRowIdx}, totalNonCash=${totalNonCashRow}, rocRow=${rocRow}, totalDist=${totalDistRow}`);
+
+  // Helper: extract values from a row (or next row if label-only), mapped to columns
+  const extractRowValues = (rowIdx) => {
+    if (rowIdx === null || rowIdx < 0) return null;
+    const numItems = extractNumItems(rows[rowIdx]);
+    if (numItems.length > 0) return numItems;
+    // Values might be on the next row if this row is just the label
+    if (rowIdx + 1 < rows.length) return extractNumItems(rows[rowIdx + 1]);
+    return [];
+  };
 
   if (columns.length > 0) {
     // Get total $/unit per column (needed for percentage conversion)
     let totalDistPerCol = new Array(columns.length).fill(0);
     if (totalDistRow !== null) {
-      const numItems = extractNumItems(rows[totalDistRow]);
-      if (numItems.length === 0 && totalDistRow + 1 < rows.length) {
-        totalDistPerCol = matchToColumn(extractNumItems(rows[totalDistRow + 1]), columns);
-      } else {
-        totalDistPerCol = matchToColumn(numItems, columns);
-      }
+      totalDistPerCol = matchToColumn(extractRowValues(totalDistRow) || [], columns);
       log(`  Total $/unit per column: [${totalDistPerCol.join(", ")}]`);
     }
 
-    for (const cr of componentRows) {
-      const numItems = extractNumItems(rows[cr.rowIdx]);
-      let colValues = matchToColumn(numItems.length > 0 ? numItems : (cr.rowIdx + 1 < rows.length ? extractNumItems(rows[cr.rowIdx + 1]) : []), columns);
-      log(`  ${cr.label} raw per column: [${colValues.join(", ")}]`);
-
+    // Extract Total Non-Cash Distributions per column
+    if (totalNonCashRow !== null) {
+      const colValues = matchToColumn(extractRowValues(totalNonCashRow) || [], columns);
+      log(`  Total Non-Cash raw per column: [${colValues.join(", ")}]`);
       for (let c = 0; c < columns.length; c++) {
         let val = colValues[c];
         if (val === 0) continue;
-        // Convert percentage to dollars for this specific column
-        if (calcMethod === "percent" && totalDistPerCol[c] > 0) {
-          val = (val / 100) * totalDistPerCol[c];
-        }
+        if (calcMethod === "percent" && totalDistPerCol[c] > 0) val = (val / 100) * totalDistPerCol[c];
         distributions.push({
-          label: cr.label, type: cr.type,
+          label: "Non-Cash Distribution", type: "nonCash",
           recordDate: columns[c].recordDate,
           value: Math.round(val * 1e6) / 1e6,
         });
       }
     }
 
-    // Fallback: if no individual components but total non-cash row exists
-    if (componentRows.length === 0 && totalNonCashRow !== null) {
-      const numItems = extractNumItems(rows[totalNonCashRow]);
-      const colValues = matchToColumn(numItems.length > 0 ? numItems : (totalNonCashRow + 1 < rows.length ? extractNumItems(rows[totalNonCashRow + 1]) : []), columns);
+    // Extract Return of Capital per column
+    if (rocRow !== null) {
+      const colValues = matchToColumn(extractRowValues(rocRow) || [], columns);
+      log(`  Return of Capital raw per column: [${colValues.join(", ")}]`);
       for (let c = 0; c < columns.length; c++) {
         let val = colValues[c];
         if (val === 0) continue;
         if (calcMethod === "percent" && totalDistPerCol[c] > 0) val = (val / 100) * totalDistPerCol[c];
-        distributions.push({ label: "Non-Cash Distribution", type: "nonCash", recordDate: columns[c].recordDate, value: Math.round(val * 1e6) / 1e6 });
+        distributions.push({
+          label: "Return of Capital", type: "roc",
+          recordDate: columns[c].recordDate,
+          value: Math.round(val * 1e6) / 1e6,
+        });
       }
     }
   } else {
@@ -868,19 +882,22 @@ async function parseCDSPdf(data, onLog) {
       const nums = extractNums(rows[totalDistRow]);
       if (nums.length > 0) totalDist = nums.reduce((s, n) => s + n, 0);
     }
-    for (const cr of componentRows) {
-      const nums = extractNums(rows[cr.rowIdx]);
-      if (nums.length === 0) continue;
-      let val = nums.reduce((s, n) => s + n, 0);
-      if (calcMethod === "percent" && totalDist > 0) val = (nums[0] / 100) * totalDist;
-      distributions.push({ label: cr.label, type: cr.type, recordDate: fallbackDate, value: Math.round(val * 1e6) / 1e6 });
-    }
-    if (componentRows.length === 0 && totalNonCashRow !== null) {
+    // Use totalNonCashRow for non-cash distributions
+    if (totalNonCashRow !== null) {
       const nums = extractNums(rows[totalNonCashRow]);
       if (nums.length > 0) {
         let val = nums.reduce((s, n) => s + n, 0);
         if (calcMethod === "percent" && totalDist > 0) val = (nums[0] / 100) * totalDist;
         distributions.push({ label: "Non-Cash Distribution", type: "nonCash", recordDate: fallbackDate, value: Math.round(val * 1e6) / 1e6 });
+      }
+    }
+    // Use rocRow for return of capital
+    if (rocRow !== null) {
+      const nums = extractNums(rows[rocRow]);
+      if (nums.length > 0) {
+        let val = nums.reduce((s, n) => s + n, 0);
+        if (calcMethod === "percent" && totalDist > 0) val = (nums[0] / 100) * totalDist;
+        distributions.push({ label: "Return of Capital", type: "roc", recordDate: fallbackDate, value: Math.round(val * 1e6) / 1e6 });
       }
     }
   }
