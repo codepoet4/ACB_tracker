@@ -1,43 +1,13 @@
 import * as esbuild from "esbuild";
-import { createServer } from "http";
-import { readFileSync, writeFileSync, rmSync, mkdirSync, existsSync } from "fs";
-import { join, extname } from "path";
+import { writeFileSync, rmSync, mkdirSync, existsSync } from "fs";
 
 const isProd = !process.argv.includes("--dev");
-const isServe = process.argv.includes("--serve");
-
-const MIME = {
-  ".html": "text/html",
-  ".js": "application/javascript",
-  ".css": "text/css",
-  ".json": "application/json",
-  ".png": "image/png",
-  ".svg": "image/svg+xml",
-  ".ico": "image/x-icon",
-};
-
-function serve(dir, port) {
-  createServer((req, res) => {
-    const url = req.url === "/" ? "/index.html" : req.url.split("?")[0];
-    const file = join(dir, url);
-    try {
-      const data = readFileSync(file);
-      res.writeHead(200, { "Content-Type": MIME[extname(file)] || "application/octet-stream" });
-      res.end(data);
-    } catch {
-      // SPA fallback
-      const html = readFileSync(join(dir, "index.html"));
-      res.writeHead(200, { "Content-Type": "text/html" });
-      res.end(html);
-    }
-  }).listen(port, () => console.log(`Serving on http://localhost:${port}`));
-}
 
 async function build() {
   if (existsSync("dist")) rmSync("dist", { recursive: true });
   mkdirSync("dist/assets", { recursive: true });
 
-  const opts = {
+  const result = await esbuild.build({
     entryPoints: ["src/main.jsx"],
     bundle: true,
     outdir: "dist/assets",
@@ -53,23 +23,13 @@ async function build() {
     define: {
       "process.env.NODE_ENV": isProd ? '"production"' : '"development"',
     },
-  };
+  });
 
-  if (isServe) {
-    const ctx = await esbuild.context(opts);
-    const result = await ctx.rebuild();
-    writeHtml(result);
-    const { port } = await ctx.serve({ servedir: "dist", port: 5173 });
-    console.log(`Dev server: http://localhost:${port}`);
-  } else {
-    const result = await esbuild.build(opts);
-    writeHtml(result);
-    const text = await esbuild.analyzeMetafile(result.metafile, {
-      verbose: false,
-    });
-    console.log(text);
-    serve("dist", 5000);
-  }
+  writeHtml(result);
+  const text = await esbuild.analyzeMetafile(result.metafile, {
+    verbose: false,
+  });
+  console.log(text);
 }
 
 function writeHtml(result) {
