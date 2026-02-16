@@ -1,8 +1,37 @@
 import * as esbuild from "esbuild";
-import { writeFileSync, rmSync, mkdirSync, existsSync } from "fs";
+import { createServer } from "http";
+import { readFileSync, writeFileSync, rmSync, mkdirSync, existsSync } from "fs";
+import { join, extname } from "path";
 
 const isProd = !process.argv.includes("--dev");
 const isServe = process.argv.includes("--serve");
+
+const MIME = {
+  ".html": "text/html",
+  ".js": "application/javascript",
+  ".css": "text/css",
+  ".json": "application/json",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+};
+
+function serve(dir, port) {
+  createServer((req, res) => {
+    const url = req.url === "/" ? "/index.html" : req.url.split("?")[0];
+    const file = join(dir, url);
+    try {
+      const data = readFileSync(file);
+      res.writeHead(200, { "Content-Type": MIME[extname(file)] || "application/octet-stream" });
+      res.end(data);
+    } catch {
+      // SPA fallback
+      const html = readFileSync(join(dir, "index.html"));
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(html);
+    }
+  }).listen(port, () => console.log(`Serving on http://localhost:${port}`));
+}
 
 async function build() {
   if (existsSync("dist")) rmSync("dist", { recursive: true });
@@ -39,6 +68,7 @@ async function build() {
       verbose: false,
     });
     console.log(text);
+    serve("dist", 8080);
   }
 }
 
