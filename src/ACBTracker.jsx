@@ -4,7 +4,7 @@ import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-const APP_VERSION = "1.5.9";
+const APP_VERSION = "1.6.0";
 const uid = () => Math.random().toString(36).slice(2, 10);
 let _dp = 2;
 const fmt = (n) => { const v = (n != null && !isNaN(n)) ? Number(n) : 0; return `$${v.toLocaleString("en-CA", { minimumFractionDigits: _dp, maximumFractionDigits: _dp })}`; };
@@ -354,23 +354,38 @@ function parseDominoTable(table, log, resolveUrl) {
     for (let ci = 0; ci < headerRow.cells.length; ci++) {
       headers[ci] = (headerRow.cells[ci].textContent || "").trim();
     }
-    log(`Headers: ${headers.filter(Boolean).join(", ")}`);
+    log(`Headers (${headerRow.cells.length} cols): ${headers.map((h, i) => `[${i}]="${h}"`).join(", ")}`);
   }
   const isHeaderRow = (row) => row === headerRow && headers.some(Boolean);
 
+  let sampleLogged = 0;
   for (const row of table.rows) {
     const cols = row.cells;
     if (!cols || cols.length < 2) { rowsSkipped++; continue; }
     if (isHeaderRow(row)) continue;
 
+    // Log first 2 data rows in full detail
+    if (sampleLogged < 2) {
+      const cellInfo = Array.from(cols).map((c, ci) => {
+        const links = Array.from(c.querySelectorAll("a[href]"));
+        const linkInfo = links.map(a => `<a href="${(a.getAttribute("href")||"").slice(0,60)}">${a.textContent.trim().slice(0,30)}</a>`).join(" ");
+        return `[${ci}${headers[ci] ? " " + headers[ci] : ""}] text="${c.textContent.trim().slice(0,40)}" links=${links.length}${linkInfo ? " " + linkInfo : ""}`;
+      });
+      log(`Row ${sampleLogged + 1} detail (${cols.length} cells):`);
+      for (const ci of cellInfo) log(`  ${ci}`);
+      sampleLogged++;
+    }
+
     // Collect ALL links with their column header name
     const rowLinks = [];
     for (let ci = 0; ci < cols.length; ci++) {
-      const a = cols[ci].querySelector("a[href]");
-      if (!a) continue;
-      const href = a.getAttribute("href") || "";
-      if (!href || href.startsWith("#") || href.startsWith("javascript")) continue;
-      rowLinks.push({ col: headers[ci] || `Col${ci}`, text: a.textContent.trim(), url: resolveUrl(href), href });
+      // Get ALL links in each cell, not just the first
+      const cellLinks = cols[ci].querySelectorAll("a[href]");
+      for (const a of cellLinks) {
+        const href = a.getAttribute("href") || "";
+        if (!href || href.startsWith("#") || href.startsWith("javascript")) continue;
+        rowLinks.push({ col: headers[ci] || `Col${ci}`, text: a.textContent.trim(), url: resolveUrl(href), href });
+      }
     }
     if (rowLinks.length === 0) { rowsNoLink++; continue; }
 
@@ -395,7 +410,7 @@ function parseDominoTable(table, log, resolveUrl) {
   log(`Domino table: ${rowsParsed} data rows, ${result.length} unique funds (${rowsSkipped} skipped, ${rowsNoLink} no link)`);
   if (result.length === 0 && table.rows.length > 1) {
     const sr = table.rows[Math.min(1, table.rows.length - 1)];
-    log(`Sample row HTML: ${sr.innerHTML.slice(0, 300)}`);
+    log(`Sample row HTML: ${sr.innerHTML.slice(0, 500)}`);
   }
   return result;
 }
@@ -412,23 +427,38 @@ function parseGenericTable(table, log, resolveUrl, isDownloadHref, isExternalHre
     for (let ci = 0; ci < headerRow.cells.length; ci++) {
       headers[ci] = (headerRow.cells[ci].textContent || "").trim();
     }
-    if (headers.some(Boolean)) log(`Table[${tableIndex}] headers: ${headers.filter(Boolean).join(", ")}`);
+    if (headers.some(Boolean)) log(`Table[${tableIndex}] headers (${headerRow.cells.length} cols): ${headers.map((h, i) => `[${i}]="${h}"`).join(", ")}`);
   }
   const isHeaderRow = (row) => row === headerRow && headers.some(Boolean);
 
+  let sampleLogged = 0;
   for (const row of table.rows) {
     if (!row.cells || row.cells.length < 2) continue;
     if (isHeaderRow(row)) continue;
     rowsAnalyzed++;
 
+    // Log first 2 data rows in full detail
+    if (sampleLogged < 2) {
+      const cellInfo = Array.from(row.cells).map((c, ci) => {
+        const links = Array.from(c.querySelectorAll("a[href]"));
+        const linkInfo = links.map(a => `<a href="${(a.getAttribute("href")||"").slice(0,80)}">${a.textContent.trim().slice(0,30)}</a>`).join(" ");
+        return `[${ci}${headers[ci] ? " " + headers[ci] : ""}] text="${c.textContent.trim().slice(0,40)}" links=${links.length}${linkInfo ? " " + linkInfo : ""}`;
+      });
+      log(`Table[${tableIndex}] Row ${sampleLogged + 1} detail (${row.cells.length} cells):`);
+      for (const ci of cellInfo) log(`  ${ci}`);
+      sampleLogged++;
+    }
+
     // Collect ALL links with their column header name
     const rowLinks = [];
     for (let ci = 0; ci < row.cells.length; ci++) {
-      const a = row.cells[ci].querySelector("a[href]");
-      if (!a) continue;
-      const href = a.getAttribute("href") || "";
-      if (!href || href.startsWith("#") || href.startsWith("javascript")) continue;
-      rowLinks.push({ col: headers[ci] || `Col${ci}`, text: a.textContent.trim(), url: resolveUrl(href), href });
+      // Get ALL links in each cell, not just the first
+      const cellLinks = row.cells[ci].querySelectorAll("a[href]");
+      for (const a of cellLinks) {
+        const href = a.getAttribute("href") || "";
+        if (!href || href.startsWith("#") || href.startsWith("javascript")) continue;
+        rowLinks.push({ col: headers[ci] || `Col${ci}`, text: a.textContent.trim(), url: resolveUrl(href), href });
+      }
     }
     if (rowLinks.length === 0) continue;
 
@@ -882,9 +912,9 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
               </div>
             ))}
           </div>
-          {fetchingXls && logs.length > 0 && (
-            <div style={{ background: "#0d1117", borderRadius: 6, padding: 8, marginTop: 8, maxHeight: 120, overflowY: "auto", fontFamily: "monospace", fontSize: 11, lineHeight: 1.5 }}>
-              {logs.map((l, i) => <div key={i} style={{ color: "#8b949e" }}><span style={{ color: "#484f58" }}>{l.time}</span> {l.msg}</div>)}
+          {logs.length > 0 && (
+            <div style={{ background: "#0d1117", borderRadius: 6, padding: 8, marginTop: 8, maxHeight: 200, overflowY: "auto", fontFamily: "monospace", fontSize: 10, lineHeight: 1.4 }}>
+              {logs.map((l, i) => <div key={i} style={{ color: "#8b949e", whiteSpace: "pre-wrap", wordBreak: "break-all" }}><span style={{ color: "#484f58" }}>{l.time}</span> {l.msg}</div>)}
             </div>
           )}
           <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
