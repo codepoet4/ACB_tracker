@@ -4,7 +4,7 @@ import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-const APP_VERSION = "1.6.1";
+const APP_VERSION = "1.6.2";
 const uid = () => Math.random().toString(36).slice(2, 10);
 let _dp = 2;
 const fmt = (n) => { const v = (n != null && !isNaN(n)) ? Number(n) : 0; return `$${v.toLocaleString("en-CA", { minimumFractionDigits: _dp, maximumFractionDigits: _dp })}`; };
@@ -234,14 +234,20 @@ const CORS_PROXIES = [
   { name: "allorigins.win", fn: (u) => "https://api.allorigins.win/raw?url=" + encodeURIComponent(u) },
 ];
 
-async function proxyFetch(url, responseType = "text", onLog) {
+async function proxyFetch(url, responseType = "text", onLog, options = {}) {
   const log = onLog || (() => {});
   const errors = [];
   for (const proxy of CORS_PROXIES) {
     log(`Trying proxy: ${proxy.name}...`);
     const proxyUrl = proxy.fn(url);
     try {
-      const resp = await fetch(proxyUrl);
+      const fetchOpts = {};
+      if (options.method === "POST" && options.body) {
+        fetchOpts.method = "POST";
+        fetchOpts.headers = { "Content-Type": "application/x-www-form-urlencoded" };
+        fetchOpts.body = options.body;
+      }
+      const resp = await fetch(proxyUrl, fetchOpts);
       if (resp.ok) {
         const size = resp.headers.get("content-length");
         log(`${proxy.name}: HTTP ${resp.status} OK${size ? ` (${(size / 1024).toFixed(1)} KB)` : ""}`);
@@ -388,15 +394,25 @@ function parseDominoTable(table, log, resolveUrl) {
       sampleLogged++;
     }
 
-    // Collect ALL links with their column header name
+    // Collect ALL links AND forms with their column header name
     const rowLinks = [];
     for (let ci = 0; ci < cols.length; ci++) {
-      // Get ALL links in each cell, not just the first
+      const colName = headers[ci] || `Col${ci}`;
+      // Regular <a href> links
       const cellLinks = cols[ci].querySelectorAll("a[href]");
       for (const a of cellLinks) {
         const href = a.getAttribute("href") || "";
         if (!href || href.startsWith("#") || href.startsWith("javascript")) continue;
-        rowLinks.push({ col: headers[ci] || `Col${ci}`, text: a.textContent.trim(), url: resolveUrl(href), href });
+        rowLinks.push({ col: colName, text: a.textContent.trim(), url: resolveUrl(href), href });
+      }
+      // <form> elements (e.g. CDS POST download forms)
+      const cellForms = cols[ci].querySelectorAll("form[action]");
+      for (const form of cellForms) {
+        const action = form.getAttribute("action") || "";
+        if (!action) continue;
+        const inputs = Array.from(form.querySelectorAll("input[type=hidden]"));
+        const formData = inputs.map(inp => `${encodeURIComponent(inp.getAttribute("name")||"")}=${encodeURIComponent(inp.getAttribute("value")||"")}`).join("&");
+        rowLinks.push({ col: colName, text: "Download", url: resolveUrl(action), href: action, formPost: true, formData });
       }
     }
     if (rowLinks.length === 0) { rowsNoLink++; continue; }
@@ -410,7 +426,7 @@ function parseDominoTable(table, log, resolveUrl) {
     const date = (dateEl ? dateEl.textContent.trim() : "")
       || cellTexts.find(c => /\d{4}[-/]\d{2}[-/]\d{2}/.test(c)) || "";
     const name = cellTexts.find(c => c.length > 10 && !/^\d+$/.test(c) && !/\d{4}[-/]\d{2}/.test(c))
-      || rowLinks[0].text || "";
+      || rowLinks.find(l => !l.formPost)?.text || "";
     if (!name && !cusip) continue;
     const key = cusip || name;
     if (!seen[key] || date > seen[key].date) {
@@ -427,7 +443,7 @@ function parseDominoTable(table, log, resolveUrl) {
   return result;
 }
 
-// Parse any table — collect ALL links per row with their column header names
+// Parse any table — collect ALL links AND forms per row
 function parseGenericTable(table, log, resolveUrl, isDownloadHref, isExternalHref, fileType, tableIndex) {
   const funds = [], seen = {};
   let rowsAnalyzed = 0;
@@ -473,22 +489,32 @@ function parseGenericTable(table, log, resolveUrl, isDownloadHref, isExternalHre
       sampleLogged++;
     }
 
-    // Collect ALL links with their column header name
+    // Collect ALL links AND forms with their column header name
     const rowLinks = [];
     for (let ci = 0; ci < row.cells.length; ci++) {
-      // Get ALL links in each cell, not just the first
+      const colName = headers[ci] || `Col${ci}`;
+      // Regular <a href> links
       const cellLinks = row.cells[ci].querySelectorAll("a[href]");
       for (const a of cellLinks) {
         const href = a.getAttribute("href") || "";
         if (!href || href.startsWith("#") || href.startsWith("javascript")) continue;
-        rowLinks.push({ col: headers[ci] || `Col${ci}`, text: a.textContent.trim(), url: resolveUrl(href), href });
+        rowLinks.push({ col: colName, text: a.textContent.trim(), url: resolveUrl(href), href });
+      }
+      // <form> elements (e.g. CDS POST download forms)
+      const cellForms = row.cells[ci].querySelectorAll("form[action]");
+      for (const form of cellForms) {
+        const action = form.getAttribute("action") || "";
+        if (!action) continue;
+        const inputs = Array.from(form.querySelectorAll("input[type=hidden]"));
+        const formData = inputs.map(inp => `${encodeURIComponent(inp.getAttribute("name")||"")}=${encodeURIComponent(inp.getAttribute("value")||"")}`).join("&");
+        rowLinks.push({ col: colName, text: "Download", url: resolveUrl(action), href: action, formPost: true, formData });
       }
     }
     if (rowLinks.length === 0) continue;
 
     const cellTexts = Array.from(row.cells).map(c => c.textContent.trim());
     const name = cellTexts.find(c => c.length > 10 && !/^\d+$/.test(c) && !/\d{4}[-/]\d{2}/.test(c))
-      || rowLinks[0].text || "";
+      || rowLinks.find(l => !l.formPost)?.text || "";
     const cusip = cellTexts.find(c => /^\d{8,9}$/.test(c)) || "";
     const date = cellTexts.find(c => /\d{4}[-/]\d{2}[-/]\d{2}/.test(c)) || "";
 
@@ -791,9 +817,10 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
   const doFetchXls = async (fund) => {
     setFetchingXls(true); setErrMsg(""); setLogs([]); setShowLogs(false);
     addLog(`Selected fund: ${fund.name} (CUSIP: ${fund.cusip})`);
-    addLog(`Downloading Excel: ${fund.xlsUrl}`);
+    addLog(`Downloading: ${fund.xlsUrl}${fund.formPost ? " (POST)" : ""}`);
     try {
-      const buf = await proxyFetch(fund.xlsUrl, "arraybuffer", addLog);
+      const fetchOpts = fund.formPost ? { method: "POST", body: fund.formData } : {};
+      const buf = await proxyFetch(fund.xlsUrl, "arraybuffer", addLog, fetchOpts);
       addLog(`Downloaded ${(buf.byteLength / 1024).toFixed(1)} KB. Parsing Excel...`);
       // Detect if response is HTML or PDF instead of a real Excel file
       const header = new Uint8Array(buf.slice(0, 100));
@@ -918,13 +945,15 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
                 <div style={{ display: "flex", gap: 4, marginTop: 4, flexWrap: "wrap", alignItems: "center" }}>
                   {(f.links || []).map((lnk, li) => {
                     const h = lnk.href.toLowerCase();
-                    const isFile = h.endsWith(".xls") || h.endsWith(".xlsx") || h.endsWith(".xlsm") || h.endsWith(".pdf")
+                    const isFormDl = !!lnk.formPost;
+                    const isFile = isFormDl || h.endsWith(".xls") || h.endsWith(".xlsx") || h.endsWith(".xlsm") || h.endsWith(".pdf")
                       || h.includes("$file") || h.includes("openfileresource") || h.includes("openelement");
-                    const isPdf = h.endsWith(".pdf");
+                    const isPdf = !isFormDl && h.endsWith(".pdf");
+                    const doDownload = () => doFetchXls({ ...f, xlsUrl: lnk.url, formPost: lnk.formPost, formData: lnk.formData });
                     return (
-                      <button key={li} onClick={() => isFile && !isPdf ? doFetchXls({ ...f, xlsUrl: lnk.url }) : window.open(lnk.url, "_blank")} disabled={fetchingXls && isFile && !isPdf} style={{ ...S.btnSm(isFile ? (isPdf ? "#854d0e" : "#4f46e5") : "#252d3d"), fontSize: 10, padding: "2px 6px", cursor: fetchingXls && isFile ? "wait" : "pointer", border: isFile ? "none" : "1px solid #374151" }}>
+                      <button key={li} onClick={() => isFile && !isPdf ? doDownload() : window.open(lnk.url, "_blank")} disabled={fetchingXls && isFile && !isPdf} style={{ ...S.btnSm(isFile ? (isPdf ? "#854d0e" : "#4f46e5") : "#252d3d"), fontSize: 10, padding: "2px 6px", cursor: fetchingXls && isFile ? "wait" : "pointer", border: isFile ? "none" : "1px solid #374151" }}>
                         <span style={{ color: "#9ca3af", marginRight: 3 }}>{lnk.col}:</span>
-                        {isFile && !isPdf ? "Auto-parse" : isPdf ? "Open PDF" : (lnk.text || "Open").slice(0, 30)}
+                        {isFormDl ? "Download & Parse" : isFile && !isPdf ? "Auto-parse" : isPdf ? "Open PDF" : (lnk.text || "Open").slice(0, 30)}
                       </button>
                     );
                   })}
