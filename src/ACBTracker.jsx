@@ -4,7 +4,7 @@ import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-const APP_VERSION = "1.5.6";
+const APP_VERSION = "1.5.7";
 const uid = () => Math.random().toString(36).slice(2, 10);
 let _dp = 2;
 const fmt = (n) => { const v = (n != null && !isNaN(n)) ? Number(n) : 0; return `$${v.toLocaleString("en-CA", { minimumFractionDigits: _dp, maximumFractionDigits: _dp })}`; };
@@ -382,16 +382,22 @@ function parseDominoTable(table, log, resolveUrl) {
     // Prefer name from the name/website link text, fall back to download link text
     const name = (nameLink ? nameLink.textContent.trim() : "") || (downloadLink ? downloadLink.textContent.trim() : "") || allLinks[0].textContent.trim();
     if (!name && !cusip) continue;
-    // Use download link if available, otherwise fall back to the external link
-    const bestLink = downloadLink || nameLink || allLinks[0];
-    const href = bestLink.getAttribute("href") || "";
-    const fullUrl = resolveUrl(href);
     const key = cusip || name;
+    // Build fund entry with both download URL and external URL when available
+    const dlHref = downloadLink ? (downloadLink.getAttribute("href") || "") : "";
+    const extHref = nameLink ? (nameLink.getAttribute("href") || "") : "";
+    const dlUrl = dlHref ? resolveUrl(dlHref) : "";
+    const extUrl = extHref ? resolveUrl(extHref) : "";
     const fType = downloadLink
-      ? (href.toLowerCase().endsWith(".pdf") ? "pdf" : "xls")
+      ? (dlHref.toLowerCase().endsWith(".pdf") ? "pdf" : "xls")
       : "link";
-    if (fType === "link") rowsExternal++;
-    if (!seen[key] || date > seen[key].date) { seen[key] = { cusip, name, date, xlsUrl: fullUrl, fileType: fType }; }
+    if (!downloadLink) rowsExternal++;
+    const entry = { cusip, name, date, fileType: fType };
+    if (dlUrl) entry.xlsUrl = dlUrl;
+    if (extUrl) entry.externalUrl = extUrl;
+    // For external-only funds, use the external URL as xlsUrl for backward compat
+    if (!dlUrl && extUrl) entry.xlsUrl = extUrl;
+    if (!seen[key] || date > seen[key].date) { seen[key] = entry; }
     rowsParsed++;
   }
   const result = Object.values(seen);
@@ -764,11 +770,19 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
     try {
       const buf = await proxyFetch(fund.xlsUrl, "arraybuffer", addLog);
       addLog(`Downloaded ${(buf.byteLength / 1024).toFixed(1)} KB. Parsing Excel...`);
-      // Detect if response is HTML instead of a real Excel file
+      // Detect if response is HTML or PDF instead of a real Excel file
       const header = new Uint8Array(buf.slice(0, 100));
       const headerStr = new TextDecoder("utf-8", { fatal: false }).decode(header).trim().toLowerCase();
       if (headerStr.startsWith("<!doctype") || headerStr.startsWith("<html") || headerStr.startsWith("<head")) {
         throw new Error(`The URL returned an HTML page instead of an Excel file. This fund's spreadsheet may not be hosted on CDS — try downloading it directly from the provider's website and using Upload mode.`);
+      }
+      if (headerStr.startsWith("%pdf")) {
+        addLog("File is a PDF, not Excel. Opening in new tab...");
+        const blob = new Blob([buf], { type: "application/pdf" });
+        window.open(URL.createObjectURL(blob), "_blank");
+        setErrMsg("This fund provides a PDF instead of Excel. The PDF has been opened — use Manual mode to enter the values.");
+        setShowLogs(true); setStatus("error"); setFetchingXls(false);
+        return;
       }
       const r = parseCDSExcel(buf);
       addLog(`Parse result: symbol="${r.symbol || "?"}", fundName="${r.fundName || "?"}", calcMethod=${r.calcMethod || "dollar"}`);
@@ -797,7 +811,16 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
     setStatus("loading"); setResult(null); setProposed([]); setErrMsg("");
     try {
       const buf = await file.arrayBuffer();
-      applyResult(parseCDSExcel(buf));
+      // Detect PDF uploads — open in new tab and guide user to Manual mode
+      const hdr = new TextDecoder("utf-8", { fatal: false }).decode(new Uint8Array(buf.slice(0, 10))).trim();
+      if (hdr.startsWith("%PDF") || file.name.toLowerCase().endsWith(".pdf")) {
+        const blob = new Blob([buf], { type: "application/pdf" });
+        window.open(URL.createObjectURL(blob), "_blank");
+        setErrMsg("PDF files can't be auto-parsed. The PDF has been opened in a new tab — read the values and use Manual mode to enter them.");
+        setStatus("error");
+      } else {
+        applyResult(parseCDSExcel(buf));
+      }
     } catch (err) {
       setErrMsg("Could not parse file: " + err.message);
       setStatus("error");
@@ -864,10 +887,27 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
           <div style={{ maxHeight: 240, overflowY: "auto", borderRadius: 8, border: "1px solid #2d3548" }}>
             {filteredFunds.length === 0 && <div style={{ padding: 12, fontSize: 13, color: "#6b7280", textAlign: "center" }}>No matches. Try a different search term.</div>}
             {filteredFunds.map((f, i) => (
-              <button key={(f.cusip || f.name) + i} onClick={() => (f.fileType === "pdf" || f.fileType === "link") ? window.open(f.xlsUrl, "_blank") : doFetchXls(f)} disabled={fetchingXls} style={{ display: "block", width: "100%", textAlign: "left", background: i % 2 === 0 ? "#1a1f2e" : "#151a27", border: "none", borderBottom: "1px solid #2d3548", padding: "8px 12px", cursor: fetchingXls ? "wait" : "pointer", color: "#e5e7eb", fontSize: 13 }}>
-                <div style={{ fontWeight: 500 }}>{f.name} {f.fileType === "pdf" && <span style={{ fontSize: 10, color: "#fbbf24", marginLeft: 4 }}>PDF</span>}{f.fileType === "link" && <span style={{ fontSize: 10, color: "#60a5fa", marginLeft: 4 }}>External</span>}</div>
-                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>{f.cusip ? `CUSIP: ${f.cusip}` : ""}{f.date ? ` · ${f.date}` : ""}{f.fileType === "pdf" ? " · Opens in new tab" : f.fileType === "link" ? " · Opens provider website (download XLS, then use Upload)" : " · Click to auto-parse"}</div>
-              </button>
+              <div key={(f.cusip || f.name) + i} style={{ display: "block", width: "100%", textAlign: "left", background: i % 2 === 0 ? "#1a1f2e" : "#151a27", borderBottom: "1px solid #2d3548", padding: "8px 12px", color: "#e5e7eb", fontSize: 13 }}>
+                <div style={{ fontWeight: 500, marginBottom: 2 }}>{f.name}
+                  {f.fileType === "pdf" && <span style={{ fontSize: 10, color: "#fbbf24", marginLeft: 4 }}>PDF</span>}
+                  {f.fileType === "link" && <span style={{ fontSize: 10, color: "#60a5fa", marginLeft: 4 }}>External only</span>}
+                </div>
+                <div style={{ fontSize: 11, color: "#6b7280" }}>{f.cusip ? `CUSIP: ${f.cusip}` : ""}{f.date ? ` · ${f.date}` : ""}</div>
+                <div style={{ display: "flex", gap: 6, marginTop: 4, flexWrap: "wrap" }}>
+                  {f.fileType === "xls" && (
+                    <button onClick={() => doFetchXls(f)} disabled={fetchingXls} style={{ ...S.btnSm("#4f46e5"), fontSize: 11, padding: "3px 8px", cursor: fetchingXls ? "wait" : "pointer" }}>Auto-parse XLS</button>
+                  )}
+                  {f.fileType === "pdf" && (
+                    <button onClick={() => window.open(f.xlsUrl, "_blank")} style={{ ...S.btnSm("#854d0e"), fontSize: 11, padding: "3px 8px", cursor: "pointer" }}>Open PDF</button>
+                  )}
+                  {f.fileType === "link" && f.xlsUrl && (
+                    <button onClick={() => window.open(f.xlsUrl, "_blank")} style={{ ...S.btnSm("#1e40af"), fontSize: 11, padding: "3px 8px", cursor: "pointer" }}>Open provider site</button>
+                  )}
+                  {f.externalUrl && f.fileType !== "link" && (
+                    <button onClick={() => window.open(f.externalUrl, "_blank")} style={{ ...S.btnSm("#252d3d"), fontSize: 11, padding: "3px 8px", cursor: "pointer", border: "1px solid #374151" }}>Fund website</button>
+                  )}
+                </div>
+              </div>
             ))}
           </div>
           {fetchingXls && logs.length > 0 && (
@@ -887,12 +927,12 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
         <div>
           <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 10, lineHeight: 1.6 }}>
             1. Visit <a href={cdsUrl} target="_blank" rel="noopener noreferrer" style={{ color: "#818cf8", textDecoration: "underline" }}>CDS Tax Breakdown Services</a> ({selectedYear >= 2025 ? "2025+" : "2024 & earlier"})<br />
-            2. Find your ETF and download the Excel (.xls) file<br />
+            2. Find your ETF and download the Excel (.xls) or PDF file<br />
             3. Upload it below to auto-extract Return of Capital and Non-Cash Distribution
           </div>
           <label style={{ ...S.btn(disabled ? "#374151" : "#4f46e5"), display: "block", textAlign: "center", boxSizing: "border-box", opacity: disabled ? 0.4 : 1, cursor: disabled ? "default" : "pointer" }}>
-            Upload CDS Excel File
-            <input ref={fileRef} type="file" accept=".xls,.xlsx,.xlsm" onChange={handleFile} disabled={disabled} style={{ display: "none" }} />
+            Upload CDS File (Excel or PDF)
+            <input ref={fileRef} type="file" accept=".xls,.xlsx,.xlsm,.pdf" onChange={handleFile} disabled={disabled} style={{ display: "none" }} />
           </label>
         </div>
       )}
