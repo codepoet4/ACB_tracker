@@ -4,7 +4,7 @@ import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-const APP_VERSION = "1.6.0";
+const APP_VERSION = "1.6.1";
 const uid = () => Math.random().toString(36).slice(2, 10);
 let _dp = 2;
 const fmt = (n) => { const v = (n != null && !isNaN(n)) ? Number(n) : 0; return `$${v.toLocaleString("en-CA", { minimumFractionDigits: _dp, maximumFractionDigits: _dp })}`; };
@@ -368,8 +368,20 @@ function parseDominoTable(table, log, resolveUrl) {
     if (sampleLogged < 2) {
       const cellInfo = Array.from(cols).map((c, ci) => {
         const links = Array.from(c.querySelectorAll("a[href]"));
-        const linkInfo = links.map(a => `<a href="${(a.getAttribute("href")||"").slice(0,60)}">${a.textContent.trim().slice(0,30)}</a>`).join(" ");
-        return `[${ci}${headers[ci] ? " " + headers[ci] : ""}] text="${c.textContent.trim().slice(0,40)}" links=${links.length}${linkInfo ? " " + linkInfo : ""}`;
+        const allAnchors = Array.from(c.querySelectorAll("a"));
+        const imgs = Array.from(c.querySelectorAll("img"));
+        const onclickEls = Array.from(c.querySelectorAll("[onclick]"));
+        const linkInfo = links.map(a => `<a href="${(a.getAttribute("href")||"").slice(0,80)}">${a.textContent.trim().slice(0,30) || "[img/empty]"}</a>`).join(" ");
+        const anchorNoHref = allAnchors.filter(a => !a.getAttribute("href")).map(a => `<a ${a.getAttribute("onclick") ? 'onclick="' + (a.getAttribute("onclick")||"").slice(0,60) + '"' : "no-href"}>`);
+        const imgInfo = imgs.map(im => `<img src="${(im.getAttribute("src")||"").slice(0,60)}">`).join(" ");
+        const onclickInfo = onclickEls.map(el => `${el.tagName.toLowerCase()} onclick="${(el.getAttribute("onclick")||"").slice(0,80)}"`).join(" ");
+        let detail = `[${ci}${headers[ci] ? " " + headers[ci] : ""}] text="${c.textContent.trim().slice(0,40)}" links=${links.length}`;
+        if (linkInfo) detail += ` ${linkInfo}`;
+        if (anchorNoHref.length > 0) detail += ` anchors-no-href=${anchorNoHref.length} ${anchorNoHref.join(" ")}`;
+        if (imgs.length > 0) detail += ` imgs=${imgs.length} ${imgInfo}`;
+        if (onclickEls.length > 0) detail += ` onclick=${onclickEls.length} ${onclickInfo}`;
+        if (!links.length && !imgs.length && !onclickEls.length) detail += ` html="${c.innerHTML.slice(0,120)}"`;
+        return detail;
       });
       log(`Row ${sampleLogged + 1} detail (${cols.length} cells):`);
       for (const ci of cellInfo) log(`  ${ci}`);
@@ -441,8 +453,20 @@ function parseGenericTable(table, log, resolveUrl, isDownloadHref, isExternalHre
     if (sampleLogged < 2) {
       const cellInfo = Array.from(row.cells).map((c, ci) => {
         const links = Array.from(c.querySelectorAll("a[href]"));
-        const linkInfo = links.map(a => `<a href="${(a.getAttribute("href")||"").slice(0,80)}">${a.textContent.trim().slice(0,30)}</a>`).join(" ");
-        return `[${ci}${headers[ci] ? " " + headers[ci] : ""}] text="${c.textContent.trim().slice(0,40)}" links=${links.length}${linkInfo ? " " + linkInfo : ""}`;
+        const allAnchors = Array.from(c.querySelectorAll("a"));
+        const imgs = Array.from(c.querySelectorAll("img"));
+        const onclickEls = Array.from(c.querySelectorAll("[onclick]"));
+        const linkInfo = links.map(a => `<a href="${(a.getAttribute("href")||"").slice(0,80)}">${a.textContent.trim().slice(0,30) || "[img/empty]"}</a>`).join(" ");
+        const anchorNoHref = allAnchors.filter(a => !a.getAttribute("href")).map(a => `<a ${a.getAttribute("onclick") ? 'onclick="' + (a.getAttribute("onclick")||"").slice(0,60) + '"' : "no-href"}>`);
+        const imgInfo = imgs.map(im => `<img src="${(im.getAttribute("src")||"").slice(0,60)}">`).join(" ");
+        const onclickInfo = onclickEls.map(el => `${el.tagName.toLowerCase()} onclick="${(el.getAttribute("onclick")||"").slice(0,80)}"`).join(" ");
+        let detail = `[${ci}${headers[ci] ? " " + headers[ci] : ""}] text="${c.textContent.trim().slice(0,40)}" links=${links.length}`;
+        if (linkInfo) detail += ` ${linkInfo}`;
+        if (anchorNoHref.length > 0) detail += ` anchors-no-href=${anchorNoHref.length} ${anchorNoHref.join(" ")}`;
+        if (imgs.length > 0) detail += ` imgs=${imgs.length} ${imgInfo}`;
+        if (onclickEls.length > 0) detail += ` onclick=${onclickEls.length} ${onclickInfo}`;
+        if (!links.length && !imgs.length && !onclickEls.length) detail += ` html="${c.innerHTML.slice(0,120)}"`;
+        return detail;
       });
       log(`Table[${tableIndex}] Row ${sampleLogged + 1} detail (${row.cells.length} cells):`);
       for (const ci of cellInfo) log(`  ${ci}`);
