@@ -3,8 +3,11 @@ import * as Papa from "papaparse";
 import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import * as pdfjsLib from "pdfjs-dist";
 
-const APP_VERSION = "1.6.2";
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+
+const APP_VERSION = "1.6.4";
 const uid = () => Math.random().toString(36).slice(2, 10);
 let _dp = 2;
 const fmt = (n) => { const v = (n != null && !isNaN(n)) ? Number(n) : 0; return `$${v.toLocaleString("en-CA", { minimumFractionDigits: _dp, maximumFractionDigits: _dp })}`; };
@@ -638,6 +641,124 @@ function parseCDSExcelByLabels(ws, range) {
   return { found: roc > 0 || nc > 0, calcMethod, perUnit: { nonCashDistribution: Math.round(nc * 1e6) / 1e6, returnOfCapital: Math.round(roc * 1e6) / 1e6 } };
 }
 
+// Parse CDS PDF — extract text and scan for distribution labels + values
+async function parseCDSPdf(data, onLog) {
+  const log = onLog || (() => {});
+  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(data) }).promise;
+  log(`PDF: ${pdf.numPages} page(s)`);
+
+  // Extract text from all pages, preserving layout order
+  const lines = [];
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const tc = await page.getTextContent();
+    // Group items by Y position to reconstruct lines
+    const byY = {};
+    for (const item of tc.items) {
+      if (!item.str || !item.str.trim()) continue;
+      const y = Math.round(item.transform[5]); // Y coordinate
+      if (!byY[y]) byY[y] = [];
+      byY[y].push({ x: item.transform[4], text: item.str });
+    }
+    // Sort Y descending (top of page first), X ascending within each line
+    const sortedYs = Object.keys(byY).map(Number).sort((a, b) => b - a);
+    for (const y of sortedYs) {
+      const lineItems = byY[y].sort((a, b) => a.x - b.x);
+      lines.push(lineItems.map(i => i.text).join(" "));
+    }
+  }
+
+  log(`Extracted ${lines.length} text lines from PDF`);
+  if (lines.length > 0) log(`First 5 lines: ${lines.slice(0, 5).join(" | ")}`);
+
+  // Scan lines for fund info and distribution values
+  let fundName = "", symbol = "", recordDate = "";
+  let totalNonCash = 0, totalROC = 0, totalDist = 0;
+  let calcMethod = "dollar";
+
+  // Utility: extract a number that follows a label on the same line or the next
+  const extractNum = (text) => {
+    const nums = text.match(/-?\d+\.\d+/g);
+    if (nums) return nums.map(Number);
+    return [];
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lower = line.toLowerCase();
+
+    // Fund name: typically a long line in the header area
+    if (!fundName && i < 15 && line.trim().length > 15
+      && !/cds|tax breakdown|limited partner|income trust|page|date|cusip/i.test(line)) {
+      fundName = line.trim();
+    }
+
+    // Symbol (ticker)
+    if (!symbol && /symbol|ticker/i.test(lower)) {
+      const m = line.match(/[A-Z]{2,10}(?:\.[A-Z])?/);
+      if (m) symbol = m[0];
+    }
+
+    // Record date
+    if (/record\s*date/i.test(lower)) {
+      const m = line.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+      if (m) recordDate = `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+    }
+
+    // Calculation method
+    if (/calc.*method/i.test(lower) && /cent|%/i.test(lower)) calcMethod = "percent";
+
+    // Return of Capital (per unit)
+    if (/return\s+of\s+capital/i.test(lower) && !/total\s+return/i.test(lower)) {
+      const nums = extractNum(line);
+      if (nums.length > 0) totalROC += nums.reduce((s, n) => s + n, 0);
+      else if (i + 1 < lines.length) {
+        const nextNums = extractNum(lines[i + 1]);
+        if (nextNums.length > 0) totalROC += nextNums.reduce((s, n) => s + n, 0);
+      }
+    }
+
+    // Non-Cash Distribution (total)
+    if ((/non[-\s]?cash/i.test(lower) && /total|dist/i.test(lower))
+      || (/total.*non[-\s]?cash/i.test(lower))) {
+      const nums = extractNum(line);
+      if (nums.length > 0) totalNonCash += nums.reduce((s, n) => s + n, 0);
+      else if (i + 1 < lines.length) {
+        const nextNums = extractNum(lines[i + 1]);
+        if (nextNums.length > 0) totalNonCash += nextNums.reduce((s, n) => s + n, 0);
+      }
+    }
+
+    // Total distribution per unit (for percentage method)
+    if (/total.*distribut.*per\s*unit/i.test(lower) || /total\s*\$\s*\/\s*unit/i.test(lower)) {
+      const nums = extractNum(line);
+      if (nums.length > 0) totalDist = nums[0];
+    }
+  }
+
+  // Handle percentage method
+  if (calcMethod === "percent" && totalDist > 0) {
+    totalNonCash = (totalNonCash / 100) * totalDist;
+    totalROC = (totalROC / 100) * totalDist;
+  }
+
+  log(`PDF parse: fundName="${fundName}", symbol="${symbol}", calcMethod=${calcMethod}`);
+  log(`PDF parse: nonCash=${totalNonCash}, ROC=${totalROC}, recordDate=${recordDate}`);
+
+  // Log all lines that contain distribution-related keywords for debugging
+  const relevantLines = lines.filter(l => /non[-\s]?cash|return\s+of\s+capital|total.*dist|total\s*\$/i.test(l));
+  if (relevantLines.length > 0) {
+    log(`Relevant lines found:`);
+    for (const rl of relevantLines.slice(0, 10)) log(`  "${rl}"`);
+  }
+
+  return {
+    found: totalNonCash > 0 || totalROC > 0,
+    symbol, fundName, calcMethod, recordDate,
+    perUnit: { nonCashDistribution: Math.round(totalNonCash * 1e6) / 1e6, returnOfCapital: Math.round(totalROC * 1e6) / 1e6 },
+  };
+}
+
 // ─── Styles ───
 const S = {
   page: { minHeight: "100vh", background: "#0f1219", color: "#e5e7eb", fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro', sans-serif", WebkitTextSizeAdjust: "100%" },
@@ -779,10 +900,8 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
           addLog(`Success! ${funds.length} funds loaded from attempt ${i + 1}.`);
           // Check if any funds are PDF-only
           const pdfOnly = funds.filter(f => f.fileType === "pdf");
-          const xlsFunds = funds.filter(f => f.fileType !== "pdf");
-          if (pdfOnly.length > 0 && xlsFunds.length === 0) {
-            addLog(`All ${funds.length} files are PDFs (2025+ format). PDF auto-parsing is not yet supported.`);
-            addLog("Use Upload mode with Excel files, or Manual mode to enter values from the PDF.");
+          if (pdfOnly.length > 0) {
+            addLog(`${pdfOnly.length} of ${funds.length} files are PDFs. PDF auto-parsing is supported.`);
           }
           setFundList(funds);
           setStatus("fundlist");
@@ -821,22 +940,21 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
     try {
       const fetchOpts = fund.formPost ? { method: "POST", body: fund.formData } : {};
       const buf = await proxyFetch(fund.xlsUrl, "arraybuffer", addLog, fetchOpts);
-      addLog(`Downloaded ${(buf.byteLength / 1024).toFixed(1)} KB. Parsing Excel...`);
+      addLog(`Downloaded ${(buf.byteLength / 1024).toFixed(1)} KB. Detecting format...`);
       // Detect if response is HTML or PDF instead of a real Excel file
       const header = new Uint8Array(buf.slice(0, 100));
       const headerStr = new TextDecoder("utf-8", { fatal: false }).decode(header).trim().toLowerCase();
       if (headerStr.startsWith("<!doctype") || headerStr.startsWith("<html") || headerStr.startsWith("<head")) {
         throw new Error(`The URL returned an HTML page instead of an Excel file. This fund's spreadsheet may not be hosted on CDS — try downloading it directly from the provider's website and using Upload mode.`);
       }
+      let r;
       if (headerStr.startsWith("%pdf")) {
-        addLog("File is a PDF, not Excel. Opening in new tab...");
-        const blob = new Blob([buf], { type: "application/pdf" });
-        window.open(URL.createObjectURL(blob), "_blank");
-        setErrMsg("This fund provides a PDF instead of Excel. The PDF has been opened — use Manual mode to enter the values.");
-        setShowLogs(true); setStatus("error"); setFetchingXls(false);
-        return;
+        addLog("Detected PDF format. Parsing PDF...");
+        r = await parseCDSPdf(buf, addLog);
+      } else {
+        addLog("Parsing as Excel...");
+        r = parseCDSExcel(buf);
       }
-      const r = parseCDSExcel(buf);
       addLog(`Parse result: symbol="${r.symbol || "?"}", fundName="${r.fundName || "?"}", calcMethod=${r.calcMethod || "dollar"}`);
       addLog(`Per-unit: nonCash=${r.perUnit?.nonCashDistribution}, ROC=${r.perUnit?.returnOfCapital}`);
       applyResult(r);
@@ -863,13 +981,9 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
     setStatus("loading"); setResult(null); setProposed([]); setErrMsg("");
     try {
       const buf = await file.arrayBuffer();
-      // Detect PDF uploads — open in new tab and guide user to Manual mode
       const hdr = new TextDecoder("utf-8", { fatal: false }).decode(new Uint8Array(buf.slice(0, 10))).trim();
       if (hdr.startsWith("%PDF") || file.name.toLowerCase().endsWith(".pdf")) {
-        const blob = new Blob([buf], { type: "application/pdf" });
-        window.open(URL.createObjectURL(blob), "_blank");
-        setErrMsg("PDF files can't be auto-parsed. The PDF has been opened in a new tab — read the values and use Manual mode to enter them.");
-        setStatus("error");
+        applyResult(await parseCDSPdf(buf));
       } else {
         applyResult(parseCDSExcel(buf));
       }
@@ -1130,7 +1244,7 @@ export default function ACBTracker() {
       {/* Header */}
       <div style={S.header}>
         <div style={S.row}>
-          <div><div style={S.title}>ACB Tracker <span style={{ fontSize: 12, fontWeight: 400, color: "#6b7280" }}>v{APP_VERSION}</span></div><div style={S.subtitle}>Cost Base · Capital Gains · ETF Distributions</div></div>
+          <div onClick={() => window.location.reload()} style={{ cursor: "pointer" }}><div style={S.title}>ACB Tracker <span style={{ fontSize: 12, fontWeight: 400, color: "#6b7280" }}>v{APP_VERSION}</span></div><div style={S.subtitle}>Cost Base · Capital Gains · ETF Distributions</div></div>
           <div style={{ display: "flex", gap: 6 }}>
             <button onClick={() => setDebugMode(d => !d)} style={{ ...S.btnSm(debugMode ? "#b45309" : "#252d3d"), border: `1px solid ${debugMode ? "#d97706" : "#374151"}`, fontSize: 11 }}>DBG</button>
             <button onClick={() => setShowPMgr(true)} style={{ ...S.btnSm("#252d3d"), border: "1px solid #374151" }}>&#9881;</button>

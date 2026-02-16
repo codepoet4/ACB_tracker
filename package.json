@@ -1,7 +1,7 @@
 {
   "name": "acb-tracker",
   "private": true,
-  "version": "1.6.2",
+  "version": "1.6.4",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,6 +12,7 @@
     "jspdf": "^2.5.2",
     "jspdf-autotable": "^3.8.4",
     "papaparse": "^5.4.1",
+    "pdfjs-dist": "^5.4.624",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "xlsx": "^0.18.5"
