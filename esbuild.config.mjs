@@ -68,7 +68,7 @@ async function build() {
       verbose: false,
     });
     console.log(text);
-    serve("dist", 8080);
+    serve("dist", 5000);
   }
 }
 
