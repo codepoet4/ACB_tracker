@@ -7,7 +7,7 @@ import * as pdfjsLib from "pdfjs-dist";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
 
-const APP_VERSION = "1.6.3";
+const APP_VERSION = "1.6.4";
 const uid = () => Math.random().toString(36).slice(2, 10);
 let _dp = 2;
 const fmt = (n) => { const v = (n != null && !isNaN(n)) ? Number(n) : 0; return `$${v.toLocaleString("en-CA", { minimumFractionDigits: _dp, maximumFractionDigits: _dp })}`; };
@@ -1244,7 +1244,7 @@ export default function ACBTracker() {
       {/* Header */}
       <div style={S.header}>
         <div style={S.row}>
-          <div><div style={S.title}>ACB Tracker <span style={{ fontSize: 12, fontWeight: 400, color: "#6b7280" }}>v{APP_VERSION}</span></div><div style={S.subtitle}>Cost Base · Capital Gains · ETF Distributions</div></div>
+          <div onClick={() => window.location.reload()} style={{ cursor: "pointer" }}><div style={S.title}>ACB Tracker <span style={{ fontSize: 12, fontWeight: 400, color: "#6b7280" }}>v{APP_VERSION}</span></div><div style={S.subtitle}>Cost Base · Capital Gains · ETF Distributions</div></div>
           <div style={{ display: "flex", gap: 6 }}>
             <button onClick={() => setDebugMode(d => !d)} style={{ ...S.btnSm(debugMode ? "#b45309" : "#252d3d"), border: `1px solid ${debugMode ? "#d97706" : "#374151"}`, fontSize: 11 }}>DBG</button>
             <button onClick={() => setShowPMgr(true)} style={{ ...S.btnSm("#252d3d"), border: "1px solid #374151" }}>&#9881;</button>
