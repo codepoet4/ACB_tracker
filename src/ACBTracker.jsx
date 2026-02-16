@@ -4,7 +4,7 @@ import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-const APP_VERSION = "1.5.7";
+const APP_VERSION = "1.5.8";
 const uid = () => Math.random().toString(36).slice(2, 10);
 let _dp = 2;
 const fmt = (n) => { const v = (n != null && !isNaN(n)) ? Number(n) : 0; return `$${v.toLocaleString("en-CA", { minimumFractionDigits: _dp, maximumFractionDigits: _dp })}`; };
@@ -349,41 +349,82 @@ function parseDominoTable(table, log, resolveUrl) {
   // Detect if a link is a CDS-hosted file vs external provider website
   const isCdsFileLink = (href) => {
     const h = (href || "").toLowerCase();
-    // CDS-hosted file patterns
     if (h.includes("$file") || h.includes("openfileresource") || h.includes("openelement")
       || h.includes("/taxforms/") || h.includes("taxforms.nsf")) return true;
-    // File extensions
     if (h.endsWith(".xls") || h.endsWith(".xlsx") || h.endsWith(".xlsm") || h.endsWith(".pdf")) return true;
-    // Relative URLs on CDS are fine
     if (!h.startsWith("http")) return true;
-    // Absolute URLs must be on cds.ca
     try { return new URL(h).hostname.includes("cds.ca"); } catch { return true; }
   };
+
+  // Detect column indices from header row (Date, CUSIP, Revised, Security Name, Type, Form)
+  let formColIdx = -1, nameColIdx = -1;
+  const headerRow = table.rows[0];
+  if (headerRow) {
+    for (let ci = 0; ci < headerRow.cells.length; ci++) {
+      const txt = (headerRow.cells[ci].textContent || "").trim().toLowerCase();
+      if (txt === "form" || txt === "file" || txt === "download") formColIdx = ci;
+      if (txt === "security name" || txt === "security" || txt === "fund name" || txt === "name") nameColIdx = ci;
+    }
+    if (formColIdx >= 0 || nameColIdx >= 0) log(`Header detected: formCol=${formColIdx}, nameCol=${nameColIdx}`);
+  }
+
   for (const row of table.rows) {
     const cols = row.cells;
     if (!cols || cols.length < 2) { rowsSkipped++; continue; }
+    // Skip header row
+    if (row === headerRow && (formColIdx >= 0 || nameColIdx >= 0)) continue;
     const cusipEl = row.querySelector("span.Cusip");
     const dateEl = row.querySelector("span.Date");
-    // Scan ALL links in the row — separate file download links from name/website links
-    const allLinks = Array.from(row.querySelectorAll("a[href]"));
-    if (allLinks.length === 0) { rowsNoLink++; continue; }
+
+    // If we know column positions from headers, use them directly
     let downloadLink = null, nameLink = null;
-    for (const a of allLinks) {
-      const href = a.getAttribute("href") || "";
-      if (!href || href.startsWith("#") || href.startsWith("javascript")) continue;
-      if (isCdsFileLink(href)) {
-        downloadLink = a;
-      } else {
-        nameLink = a;
+    if (formColIdx >= 0 && cols[formColIdx]) {
+      downloadLink = cols[formColIdx].querySelector("a[href]");
+    }
+    if (nameColIdx >= 0 && cols[nameColIdx]) {
+      nameLink = cols[nameColIdx].querySelector("a[href]");
+    }
+
+    // Fallback: scan ALL links and classify by href pattern
+    if (!downloadLink && !nameLink) {
+      const allLinks = Array.from(row.querySelectorAll("a[href]"));
+      if (allLinks.length === 0) { rowsNoLink++; continue; }
+      for (const a of allLinks) {
+        const href = a.getAttribute("href") || "";
+        if (!href || href.startsWith("#") || href.startsWith("javascript")) continue;
+        if (isCdsFileLink(href)) {
+          downloadLink = a;
+        } else {
+          nameLink = a;
+        }
+      }
+      // If we have 2+ links and couldn't classify either as download, treat
+      // the last link as the download (Form is typically the last column)
+      if (!downloadLink && allLinks.length >= 2) {
+        nameLink = allLinks[0];
+        downloadLink = allLinks[allLinks.length - 1];
+      }
+      if (!downloadLink && allLinks.length === 1) {
+        // Single link — classify by href
+        const href = allLinks[0].getAttribute("href") || "";
+        if (isCdsFileLink(href)) downloadLink = allLinks[0];
+        else nameLink = allLinks[0];
       }
     }
-    const cusip = cusipEl ? cusipEl.textContent.trim() : "";
-    const date = dateEl ? dateEl.textContent.trim() : "";
-    // Prefer name from the name/website link text, fall back to download link text
-    const name = (nameLink ? nameLink.textContent.trim() : "") || (downloadLink ? downloadLink.textContent.trim() : "") || allLinks[0].textContent.trim();
+
+    if (!downloadLink && !nameLink) { rowsNoLink++; continue; }
+
+    // Extract CUSIP from span or from cell text
+    const cusip = (cusipEl ? cusipEl.textContent.trim() : "")
+      || Array.from(cols).map(c => c.textContent.trim()).find(c => /^\d{8,9}$/.test(c)) || "";
+    const date = (dateEl ? dateEl.textContent.trim() : "")
+      || Array.from(cols).map(c => c.textContent.trim()).find(c => /\d{4}[-/]\d{2}[-/]\d{2}/.test(c)) || "";
+    const name = (nameLink ? nameLink.textContent.trim() : "")
+      || (downloadLink ? downloadLink.textContent.trim() : "")
+      || Array.from(cols).map(c => c.textContent.trim()).find(c => c.length > 10 && !/^\d+$/.test(c)) || "";
     if (!name && !cusip) continue;
     const key = cusip || name;
-    // Build fund entry with both download URL and external URL when available
+
     const dlHref = downloadLink ? (downloadLink.getAttribute("href") || "") : "";
     const extHref = nameLink ? (nameLink.getAttribute("href") || "") : "";
     const dlUrl = dlHref ? resolveUrl(dlHref) : "";
@@ -395,7 +436,6 @@ function parseDominoTable(table, log, resolveUrl) {
     const entry = { cusip, name, date, fileType: fType };
     if (dlUrl) entry.xlsUrl = dlUrl;
     if (extUrl) entry.externalUrl = extUrl;
-    // For external-only funds, use the external URL as xlsUrl for backward compat
     if (!dlUrl && extUrl) entry.xlsUrl = extUrl;
     if (!seen[key] || date > seen[key].date) { seen[key] = entry; }
     rowsParsed++;
@@ -414,25 +454,50 @@ function parseGenericTable(table, log, resolveUrl, isDownloadHref, isExternalHre
   const funds = [], seen = {};
   let rowsAnalyzed = 0, rowsWithDownload = 0;
   const sampleRows = [];
+
+  // Detect column indices from header row (Date, CUSIP, Revised, Security Name, Type, Form)
+  let formColIdx = -1, nameColIdx = -1;
+  const headerRow = table.rows[0];
+  if (headerRow) {
+    for (let ci = 0; ci < headerRow.cells.length; ci++) {
+      const txt = (headerRow.cells[ci].textContent || "").trim().toLowerCase();
+      if (txt === "form" || txt === "file" || txt === "download") formColIdx = ci;
+      if (txt === "security name" || txt === "security" || txt === "fund name" || txt === "name") nameColIdx = ci;
+    }
+    if (formColIdx >= 0 || nameColIdx >= 0) log(`Table[${tableIndex}] header: formCol=${formColIdx}, nameCol=${nameColIdx}`);
+  }
+
   for (const row of table.rows) {
     if (!row.cells || row.cells.length < 2) continue;
+    // Skip header row if we detected columns
+    if (row === headerRow && (formColIdx >= 0 || nameColIdx >= 0)) continue;
     rowsAnalyzed++;
     const links = Array.from(row.querySelectorAll("a[href]"));
     if (links.length === 0) continue;
 
-    // Separate download links from name/navigation links
+    // Strategy A: Use column positions from headers if available
     let downloadLink = null, nameLink = null;
-    for (const a of links) {
-      const href = a.getAttribute("href") || "";
-      if (!href || href.startsWith("#") || href.startsWith("javascript")) continue;
-      if (isDownloadHref(href)) {
-        downloadLink = a;
-      } else if (isExternalHref(href) || a.textContent.trim().length > 5) {
-        nameLink = a;
+    if (formColIdx >= 0 && row.cells[formColIdx]) {
+      downloadLink = row.cells[formColIdx].querySelector("a[href]");
+    }
+    if (nameColIdx >= 0 && row.cells[nameColIdx]) {
+      nameLink = row.cells[nameColIdx].querySelector("a[href]");
+    }
+
+    // Strategy B: Classify by href pattern
+    if (!downloadLink) {
+      for (const a of links) {
+        const href = a.getAttribute("href") || "";
+        if (!href || href.startsWith("#") || href.startsWith("javascript")) continue;
+        if (isDownloadHref(href)) {
+          downloadLink = a;
+        } else if (isExternalHref(href) || a.textContent.trim().length > 5) {
+          if (!nameLink) nameLink = a;
+        }
       }
     }
 
-    // If no dedicated download link, check if ANY link looks like a CDS-hosted file
+    // Strategy C: Check if ANY link looks like a CDS-hosted file
     if (!downloadLink) {
       for (const a of links) {
         const href = a.getAttribute("href") || "";
@@ -446,6 +511,22 @@ function parseGenericTable(table, log, resolveUrl, isDownloadHref, isExternalHre
       }
     }
 
+    // Strategy D: If 2+ links and one is external, treat the other as download
+    if (!downloadLink && links.length >= 2) {
+      for (const a of links) {
+        const href = a.getAttribute("href") || "";
+        if (!href || href.startsWith("#") || href.startsWith("javascript")) continue;
+        if (a !== nameLink && !isExternalHref(href)) {
+          downloadLink = a; break;
+        }
+      }
+      // Last resort: last link in the row is usually the Form column
+      if (!downloadLink) {
+        nameLink = links[0];
+        downloadLink = links[links.length - 1];
+      }
+    }
+
     if (!downloadLink) {
       if (sampleRows.length < 3) sampleRows.push(row);
       continue;
@@ -455,6 +536,8 @@ function parseGenericTable(table, log, resolveUrl, isDownloadHref, isExternalHre
     const dlHref = downloadLink.getAttribute("href") || "";
     const fullUrl = resolveUrl(dlHref);
     const fType = fileType(dlHref);
+    const extHref = nameLink ? (nameLink.getAttribute("href") || "") : "";
+    const extUrl = extHref ? resolveUrl(extHref) : "";
 
     // Get fund name: prefer the name link text, then cell text
     const cells = Array.from(row.cells).map(c => c.textContent.trim());
@@ -463,7 +546,12 @@ function parseGenericTable(table, log, resolveUrl, isDownloadHref, isExternalHre
     const date = cells.find(c => /\d{4}[-/]\d{2}[-/]\d{2}/.test(c)) || "";
 
     const key = cusip || name;
-    if (key && !seen[key]) { seen[key] = { cusip, name, date, xlsUrl: fullUrl, fileType: fType }; funds.push(seen[key]); }
+    if (key && !seen[key]) {
+      const entry = { cusip, name, date, xlsUrl: fullUrl, fileType: fType };
+      if (extUrl) entry.externalUrl = extUrl;
+      seen[key] = entry;
+      funds.push(entry);
+    }
   }
   if (rowsAnalyzed > 2) {
     log(`Table[${tableIndex}]: ${table.rows.length} rows, ${rowsAnalyzed} data rows, ${rowsWithDownload} with download links, ${funds.length} funds extracted`);
