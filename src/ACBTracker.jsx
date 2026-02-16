@@ -4,7 +4,7 @@ import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-const APP_VERSION = "1.5.4";
+const APP_VERSION = "1.5.5";
 const uid = () => Math.random().toString(36).slice(2, 10);
 let _dp = 2;
 const fmt = (n) => { const v = (n != null && !isNaN(n)) ? Number(n) : 0; return `$${v.toLocaleString("en-CA", { minimumFractionDigits: _dp, maximumFractionDigits: _dp })}`; };
@@ -345,7 +345,20 @@ function parseCDSIndexHTML(html, onLog, sourceUrl) {
 // Parse old Domino-style table#taxlist (span.Cusip, span.Date, a[href])
 function parseDominoTable(table, log, resolveUrl) {
   const funds = [], seen = {};
-  let rowsSkipped = 0, rowsNoLink = 0, rowsParsed = 0;
+  let rowsSkipped = 0, rowsNoLink = 0, rowsParsed = 0, rowsExternal = 0;
+  // Detect if a link is a CDS-hosted file vs external provider website
+  const isCdsFileLink = (href) => {
+    const h = (href || "").toLowerCase();
+    // CDS-hosted file patterns
+    if (h.includes("$file") || h.includes("openfileresource") || h.includes("openelement")
+      || h.includes("/taxforms/") || h.includes("taxforms.nsf")) return true;
+    // File extensions
+    if (h.endsWith(".xls") || h.endsWith(".xlsx") || h.endsWith(".xlsm") || h.endsWith(".pdf")) return true;
+    // Relative URLs on CDS are fine
+    if (!h.startsWith("http")) return true;
+    // Absolute URLs must be on cds.ca
+    try { return new URL(h).hostname.includes("cds.ca"); } catch { return true; }
+  };
   for (const row of table.rows) {
     const cols = row.cells;
     if (!cols || cols.length < 2) { rowsSkipped++; continue; }
@@ -360,11 +373,14 @@ function parseDominoTable(table, log, resolveUrl) {
     if (!name && !cusip) continue;
     const fullUrl = resolveUrl(href);
     const key = cusip || name;
-    if (!seen[key] || date > seen[key].date) { seen[key] = { cusip, name, date, xlsUrl: fullUrl }; }
+    // Classify: CDS-hosted file (auto-parse) vs external provider link (open in browser)
+    const fType = isCdsFileLink(href) ? (href.toLowerCase().endsWith(".pdf") ? "pdf" : "xls") : "link";
+    if (fType === "link") rowsExternal++;
+    if (!seen[key] || date > seen[key].date) { seen[key] = { cusip, name, date, xlsUrl: fullUrl, fileType: fType }; }
     rowsParsed++;
   }
   const result = Object.values(seen);
-  log(`Domino table: ${rowsParsed} data rows, ${result.length} unique funds (${rowsSkipped} skipped, ${rowsNoLink} no link)`);
+  log(`Domino table: ${rowsParsed} data rows, ${result.length} unique funds (${rowsSkipped} skipped, ${rowsNoLink} no link, ${rowsExternal} external)`);
   if (result.length === 0 && table.rows.length > 1) {
     const sr = table.rows[Math.min(1, table.rows.length - 1)];
     log(`Sample row HTML: ${sr.innerHTML.slice(0, 300)}`);
@@ -733,6 +749,12 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
     try {
       const buf = await proxyFetch(fund.xlsUrl, "arraybuffer", addLog);
       addLog(`Downloaded ${(buf.byteLength / 1024).toFixed(1)} KB. Parsing Excel...`);
+      // Detect if response is HTML instead of a real Excel file
+      const header = new Uint8Array(buf.slice(0, 100));
+      const headerStr = new TextDecoder("utf-8", { fatal: false }).decode(header).trim().toLowerCase();
+      if (headerStr.startsWith("<!doctype") || headerStr.startsWith("<html") || headerStr.startsWith("<head")) {
+        throw new Error(`The URL returned an HTML page instead of an Excel file. This fund's spreadsheet may not be hosted on CDS — try downloading it directly from the provider's website and using Upload mode.`);
+      }
       const r = parseCDSExcel(buf);
       addLog(`Parse result: symbol="${r.symbol || "?"}", fundName="${r.fundName || "?"}", calcMethod=${r.calcMethod || "dollar"}`);
       addLog(`Per-unit: nonCash=${r.perUnit?.nonCashDistribution}, ROC=${r.perUnit?.returnOfCapital}`);
@@ -827,9 +849,9 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
           <div style={{ maxHeight: 240, overflowY: "auto", borderRadius: 8, border: "1px solid #2d3548" }}>
             {filteredFunds.length === 0 && <div style={{ padding: 12, fontSize: 13, color: "#6b7280", textAlign: "center" }}>No matches. Try a different search term.</div>}
             {filteredFunds.map((f, i) => (
-              <button key={(f.cusip || f.name) + i} onClick={() => f.fileType === "pdf" ? window.open(f.xlsUrl, "_blank") : doFetchXls(f)} disabled={fetchingXls} style={{ display: "block", width: "100%", textAlign: "left", background: i % 2 === 0 ? "#1a1f2e" : "#151a27", border: "none", borderBottom: "1px solid #2d3548", padding: "8px 12px", cursor: fetchingXls ? "wait" : "pointer", color: "#e5e7eb", fontSize: 13 }}>
-                <div style={{ fontWeight: 500 }}>{f.name} {f.fileType === "pdf" && <span style={{ fontSize: 10, color: "#fbbf24", marginLeft: 4 }}>PDF</span>}</div>
-                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>{f.cusip ? `CUSIP: ${f.cusip}` : ""}{f.date ? ` · ${f.date}` : ""}{f.fileType === "pdf" ? " · Opens in new tab" : " · Click to auto-parse"}</div>
+              <button key={(f.cusip || f.name) + i} onClick={() => (f.fileType === "pdf" || f.fileType === "link") ? window.open(f.xlsUrl, "_blank") : doFetchXls(f)} disabled={fetchingXls} style={{ display: "block", width: "100%", textAlign: "left", background: i % 2 === 0 ? "#1a1f2e" : "#151a27", border: "none", borderBottom: "1px solid #2d3548", padding: "8px 12px", cursor: fetchingXls ? "wait" : "pointer", color: "#e5e7eb", fontSize: 13 }}>
+                <div style={{ fontWeight: 500 }}>{f.name} {f.fileType === "pdf" && <span style={{ fontSize: 10, color: "#fbbf24", marginLeft: 4 }}>PDF</span>}{f.fileType === "link" && <span style={{ fontSize: 10, color: "#60a5fa", marginLeft: 4 }}>External</span>}</div>
+                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>{f.cusip ? `CUSIP: ${f.cusip}` : ""}{f.date ? ` · ${f.date}` : ""}{f.fileType === "pdf" ? " · Opens in new tab" : f.fileType === "link" ? " · Opens provider website (download XLS, then use Upload)" : " · Click to auto-parse"}</div>
               </button>
             ))}
           </div>
