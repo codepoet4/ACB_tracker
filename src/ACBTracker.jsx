@@ -270,79 +270,80 @@ function parseCDSIndexHTML(html, onLog, sourceUrl) {
   const title = doc.querySelector("title")?.textContent?.trim() || "";
   if (title) log(`Page title: "${title}"`);
 
-  // Determine the base URL for resolving relative links
-  const base = sourceUrl ? sourceUrl.replace(/\/[^/]*$/, "/") : CDS_BASE;
+  const resolveUrl = (href) => {
+    if (!href) return "";
+    if (href.startsWith("http")) return href;
+    try { return new URL(href, sourceUrl || CDS_BASE).href; } catch { return CDS_BASE + href; }
+  };
+
+  // Classify a link as "download" (file link) or "name" (external/navigation)
+  const isDownloadHref = (href) => {
+    const h = href.toLowerCase();
+    return h.endsWith(".xls") || h.endsWith(".xlsx") || h.endsWith(".xlsm") || h.endsWith(".pdf") || h.includes("$file")
+      || h.includes("/taxforms/") || h.includes("openfileresource") || h.includes("openelement");
+  };
+  const isExternalHref = (href) => {
+    try {
+      const u = new URL(href, sourceUrl || CDS_BASE);
+      return !u.hostname.includes("cds.ca") && !u.hostname.includes("services.cds") && !u.hostname.includes("ctbs");
+    } catch { return false; }
+  };
+  const fileType = (href) => {
+    const h = href.toLowerCase();
+    if (h.endsWith(".pdf")) return "pdf";
+    return "xls";
+  };
 
   // Strategy 1: Look for table#taxlist (old Domino format)
   const taxlistTable = doc.querySelector("table#taxlist");
   if (taxlistTable) {
     log(`Found table#taxlist with ${taxlistTable.rows.length} rows (Domino format)`);
-    return parseDominoTable(taxlistTable, log, base);
+    return parseDominoTable(taxlistTable, log, resolveUrl);
   }
 
-  // Strategy 2: Scan ALL links on the page for Excel/PDF file downloads
-  const allLinks = doc.querySelectorAll("a[href]");
-  log(`No table#taxlist. Scanning ${allLinks.length} links for downloadable files...`);
-  const fileLinks = [];
-  let xlsCount = 0, pdfCount = 0, otherCount = 0;
-  for (const link of allLinks) {
-    const href = link.getAttribute("href") || "";
-    const text = link.textContent.trim();
-    const hrefLower = href.toLowerCase();
-    const isXls = hrefLower.endsWith(".xls") || hrefLower.endsWith(".xlsx") || hrefLower.includes("$file");
-    const isPdf = hrefLower.endsWith(".pdf");
-    if (isXls || isPdf) {
-      const fullUrl = href.startsWith("http") ? href : (href.startsWith("/") ? new URL(href, sourceUrl || CDS_BASE).href : base + href);
-      fileLinks.push({ name: text || href.split("/").pop(), href: fullUrl, type: isXls ? "xls" : "pdf" });
-      if (isXls) xlsCount++; else pdfCount++;
-    } else if (href && !href.startsWith("#") && !href.startsWith("javascript")) {
-      otherCount++;
-    }
-  }
-  log(`Found ${xlsCount} Excel links, ${pdfCount} PDF links, ${otherCount} other links`);
-
-  if (fileLinks.length > 0) {
-    // Try to extract CUSIP and fund name from link text or surrounding context
-    const funds = [], seen = {};
-    for (const fl of fileLinks) {
-      // Try to find CUSIP in nearby table row or parent element
-      let cusip = "", date = "", name = fl.name;
-      // Check if the link text or URL contains a CUSIP-like pattern (8-9 digits)
-      const cusipMatch = (fl.name + " " + fl.href).match(/\b(\d{8,9})\b/);
-      if (cusipMatch) cusip = cusipMatch[1];
-      const key = cusip || name;
-      if (!seen[key]) {
-        seen[key] = { cusip, name, date, xlsUrl: fl.href, fileType: fl.type };
-        funds.push(seen[key]);
-      }
-    }
-    log(`Extracted ${funds.length} fund entries from file links`);
-    return funds;
-  }
-
-  // Strategy 3: Try every table on the page
+  // Strategy 2: Try every table on the page — look for rows with BOTH a name and a download link
   const tables = doc.querySelectorAll("table");
-  log(`Trying all ${tables.length} tables on the page...`);
+  log(`No table#taxlist. Found ${tables.length} table(s), scanning for fund data...`);
   for (let ti = 0; ti < tables.length; ti++) {
     const t = tables[ti];
-    if (t.rows.length < 2) continue;
-    const result = parseGenericTable(t, log, base, ti);
+    if (t.rows.length < 3) continue;
+    const result = parseGenericTable(t, log, resolveUrl, isDownloadHref, isExternalHref, fileType, ti);
     if (result.length > 0) return result;
   }
 
+  // Strategy 3: Scan ALL links on the page for direct file downloads (no table context)
+  const allLinks = doc.querySelectorAll("a[href]");
+  log(`No table results. Scanning all ${allLinks.length} links for file downloads...`);
+  const fileLinks = [];
+  const debugLinks = [];
+  for (const link of allLinks) {
+    const href = link.getAttribute("href") || "";
+    if (!href || href.startsWith("#") || href.startsWith("javascript")) continue;
+    const text = link.textContent.trim();
+    if (isDownloadHref(href)) {
+      const fullUrl = resolveUrl(href);
+      fileLinks.push({ name: text || href.split("/").pop(), cusip: "", date: "", xlsUrl: fullUrl, fileType: fileType(href) });
+    }
+    debugLinks.push({ href: href.slice(0, 80), text: text.slice(0, 40) });
+  }
+  if (fileLinks.length > 0) {
+    log(`Found ${fileLinks.length} direct file download links`);
+    return fileLinks;
+  }
+
   // Nothing found — show diagnostics
+  log(`No file downloads found on the page.`);
   const bodyText = (doc.body?.textContent || "").replace(/\s+/g, " ").trim();
-  log(`Page body preview (first 300 chars): ${bodyText.slice(0, 300)}`);
-  // Show all links for debugging
-  if (allLinks.length > 0 && allLinks.length <= 20) {
-    log(`All links on page:`);
-    for (const a of allLinks) log(`  href="${a.getAttribute("href")}" text="${a.textContent.trim().slice(0, 60)}"`);
+  log(`Page body preview: ${bodyText.slice(0, 400)}`);
+  if (debugLinks.length > 0) {
+    log(`Sample links (first 15):`);
+    for (const dl of debugLinks.slice(0, 15)) log(`  href="${dl.href}" text="${dl.text}"`);
   }
   return [];
 }
 
 // Parse old Domino-style table#taxlist (span.Cusip, span.Date, a[href])
-function parseDominoTable(table, log, base) {
+function parseDominoTable(table, log, resolveUrl) {
   const funds = [], seen = {};
   let rowsSkipped = 0, rowsNoLink = 0, rowsParsed = 0;
   for (const row of table.rows) {
@@ -357,7 +358,7 @@ function parseDominoTable(table, log, base) {
     const href = linkEl.getAttribute("href") || "";
     const name = linkEl.textContent.trim();
     if (!name && !cusip) continue;
-    const fullUrl = href.startsWith("http") ? href : (href.startsWith("/") ? new URL(href, base).href : base + href);
+    const fullUrl = resolveUrl(href);
     const key = cusip || name;
     if (!seen[key] || date > seen[key].date) { seen[key] = { cusip, name, date, xlsUrl: fullUrl }; }
     rowsParsed++;
@@ -371,26 +372,73 @@ function parseDominoTable(table, log, base) {
   return result;
 }
 
-// Parse any HTML table looking for rows with download links
-function parseGenericTable(table, log, base, tableIndex) {
+// Parse any table — for each row, separate download links from name/external links
+function parseGenericTable(table, log, resolveUrl, isDownloadHref, isExternalHref, fileType, tableIndex) {
   const funds = [], seen = {};
-  let rowsWithLinks = 0;
+  let rowsAnalyzed = 0, rowsWithDownload = 0;
+  const sampleRows = [];
   for (const row of table.rows) {
-    const link = row.querySelector("a[href]");
-    if (!link) continue;
-    const href = link.getAttribute("href") || "";
-    const hrefLower = href.toLowerCase();
-    if (!hrefLower.endsWith(".xls") && !hrefLower.endsWith(".xlsx") && !hrefLower.endsWith(".pdf") && !hrefLower.includes("$file")) continue;
-    rowsWithLinks++;
+    if (!row.cells || row.cells.length < 2) continue;
+    rowsAnalyzed++;
+    const links = Array.from(row.querySelectorAll("a[href]"));
+    if (links.length === 0) continue;
+
+    // Separate download links from name/navigation links
+    let downloadLink = null, nameLink = null;
+    for (const a of links) {
+      const href = a.getAttribute("href") || "";
+      if (!href || href.startsWith("#") || href.startsWith("javascript")) continue;
+      if (isDownloadHref(href)) {
+        downloadLink = a;
+      } else if (isExternalHref(href) || a.textContent.trim().length > 5) {
+        nameLink = a;
+      }
+    }
+
+    // If no dedicated download link, check if ANY link looks like a CDS-hosted file
+    if (!downloadLink) {
+      for (const a of links) {
+        const href = a.getAttribute("href") || "";
+        const resolved = resolveUrl(href);
+        if (resolved.includes("cds.ca") && (href.includes("/") || href.includes("."))) {
+          const h = href.toLowerCase();
+          if (h.endsWith(".xls") || h.endsWith(".xlsx") || h.endsWith(".pdf") || h.includes("$file") || h.includes("taxform")) {
+            downloadLink = a; break;
+          }
+        }
+      }
+    }
+
+    if (!downloadLink) {
+      if (sampleRows.length < 3) sampleRows.push(row);
+      continue;
+    }
+    rowsWithDownload++;
+
+    const dlHref = downloadLink.getAttribute("href") || "";
+    const fullUrl = resolveUrl(dlHref);
+    const fType = fileType(dlHref);
+
+    // Get fund name: prefer the name link text, then cell text
     const cells = Array.from(row.cells).map(c => c.textContent.trim());
-    const name = link.textContent.trim() || cells.find(c => c.length > 5) || "";
+    const name = (nameLink ? nameLink.textContent.trim() : "") || cells.find(c => c.length > 10 && !/^\d+$/.test(c)) || downloadLink.textContent.trim() || "";
     const cusip = cells.find(c => /^\d{8,9}$/.test(c)) || "";
     const date = cells.find(c => /\d{4}[-/]\d{2}[-/]\d{2}/.test(c)) || "";
-    const fullUrl = href.startsWith("http") ? href : (href.startsWith("/") ? new URL(href, base).href : base + href);
+
     const key = cusip || name;
-    if (key && !seen[key]) { seen[key] = { cusip, name, date, xlsUrl: fullUrl }; funds.push(seen[key]); }
+    if (key && !seen[key]) { seen[key] = { cusip, name, date, xlsUrl: fullUrl, fileType: fType }; funds.push(seen[key]); }
   }
-  if (rowsWithLinks > 0) log(`Table[${tableIndex}]: ${table.rows.length} rows, ${rowsWithLinks} with file links, ${funds.length} funds extracted`);
+  if (rowsAnalyzed > 2) {
+    log(`Table[${tableIndex}]: ${table.rows.length} rows, ${rowsAnalyzed} data rows, ${rowsWithDownload} with download links, ${funds.length} funds extracted`);
+    if (funds.length === 0 && sampleRows.length > 0) {
+      log(`Sample row with no download link detected:`);
+      for (const sr of sampleRows.slice(0, 2)) {
+        const linksInfo = Array.from(sr.querySelectorAll("a[href]")).map(a => `href="${(a.getAttribute("href")||"").slice(0,60)}" text="${a.textContent.trim().slice(0,30)}"`).join(" | ");
+        log(`  Links: ${linksInfo}`);
+        log(`  Cells: ${Array.from(sr.cells).map((c,i) => `[${i}]="${c.textContent.trim().slice(0,30)}"`).join(", ")}`);
+      }
+    }
+  }
   return funds;
 }
 
