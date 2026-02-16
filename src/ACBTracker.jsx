@@ -542,6 +542,7 @@ function parseCDSExcel(data) {
   if (!ws) return { found: false, error: "Empty spreadsheet" };
 
   const cell = (r, c) => { const a = XLSX.utils.encode_cell({ r, c }); return ws[a] ? ws[a].v : null; };
+  const range = ws["!ref"] ? XLSX.utils.decode_range(ws["!ref"]) : { s: { r: 0, c: 0 }, e: { r: 60, c: 20 } };
 
   // Extract fund name and symbol from header area
   const symbol = cell(4, 12) || "";
@@ -559,44 +560,85 @@ function parseCDSExcel(data) {
 
   // Check calculation method (BMO uses percentages)
   let calcMethod = "dollar";
-  const range = ws["!ref"] ? XLSX.utils.decode_range(ws["!ref"]) : { s: { r: 0, c: 0 }, e: { r: 40, c: 20 } };
-  for (let r = 0; r <= Math.min(range.e.r, 17); r++) {
-    for (let c = 0; c <= Math.min(range.e.c, 20); c++) {
+
+  // Scan all rows for labels to find row positions dynamically
+  const rowLabels = {}; // { labelKey: rowIndex }
+  for (let r = 0; r <= range.e.r; r++) {
+    let label = "";
+    for (let c = 0; c <= Math.min(range.e.c, 3); c++) {
       const v = cell(r, c);
-      if (v && typeof v === "string" && /calc.*method/i.test(v)) {
-        const next = cell(r, c + 1);
-        if (next && /cent|%/i.test(String(next))) calcMethod = "percent";
-      }
+      if (v && typeof v === "string") label += " " + v;
     }
+    const lower = label.toLowerCase().trim();
+    if (!lower) continue;
+    if (/calc.*method/i.test(lower) && /cent|%/i.test(lower)) calcMethod = "percent";
+    if (/total.*distribut.*per\s*unit|total\s*\$\s*\/\s*unit/i.test(lower)) rowLabels.totalPerUnit = r;
+    if (/record\s*date/i.test(lower)) rowLabels.recordDate = r;
+    if (/(total\s+non[-\s]?cash|non[-\s]?cash.*total)/i.test(lower)) rowLabels.nonCash = r;
+    if (/non[-\s]?cash\s*dist/i.test(lower) && !rowLabels.nonCash) rowLabels.nonCash = r;
+    if (/return\s+of\s+capital|box\s*42|cost\s+base\s+adjust/i.test(lower) && !/total\s+return/i.test(lower)) rowLabels.roc = r;
   }
 
-  // Scan distribution columns (3-16) using known CDS row positions
+  // Determine the data columns — find which row has the per-unit values
+  // Try label-found row first, then fall back to known positions
+  const tpuRow = rowLabels.totalPerUnit ?? 18;
+  const rdRow = rowLabels.recordDate ?? 19;
+  const ncRow = rowLabels.nonCash ?? 22;
+  const rocRow = rowLabels.roc ?? 31;
+
   let totalNonCash = 0, totalROC = 0, totalPerUnitSum = 0, lastRecordDate = "";
   let columnsFound = 0;
-  for (let col = 3; col <= 16; col++) {
-    const tpu = cell(18, col);
+  for (let col = 2; col <= Math.min(range.e.c, 20); col++) {
+    const tpu = cell(tpuRow, col);
     if (tpu === null || tpu === undefined || tpu === 0 || tpu === "") continue;
-    columnsFound++;
     const perUnit = typeof tpu === "number" ? tpu : parseFloat(tpu) || 0;
+    if (perUnit === 0) continue;
+    columnsFound++;
     totalPerUnitSum += perUnit;
-    const nc = cell(22, col); // Total non-cash
-    const roc = cell(31, col); // Return of capital
-    const rd = cell(19, col); // Record date
+    const nc = cell(ncRow, col);
+    const roc = cell(rocRow, col);
+    const rd = cell(rdRow, col);
     totalNonCash += typeof nc === "number" ? nc : parseFloat(nc) || 0;
     totalROC += typeof roc === "number" ? roc : parseFloat(roc) || 0;
     if (rd) lastRecordDate = String(rd);
   }
 
-  // Handle BMO percentage method
+  // If no columns found via per-unit row, try scanning each row for numeric data
+  if (columnsFound === 0) {
+    // Find first row with multiple numeric values as the header row
+    for (let r = 10; r <= Math.min(range.e.r, 25); r++) {
+      let numCount = 0;
+      for (let c = 2; c <= Math.min(range.e.c, 20); c++) {
+        const v = cell(r, c);
+        if (v !== null && typeof v === "number" && v !== 0) numCount++;
+      }
+      if (numCount >= 1) {
+        // Use this as the total per unit row
+        for (let col = 2; col <= Math.min(range.e.c, 20); col++) {
+          const tpu = cell(r, col);
+          if (tpu === null || tpu === undefined || tpu === 0 || tpu === "") continue;
+          const perUnit = typeof tpu === "number" ? tpu : parseFloat(tpu) || 0;
+          if (perUnit === 0) continue;
+          columnsFound++;
+          totalPerUnitSum += perUnit;
+          if (rocRow !== 31 || rowLabels.roc !== undefined) {
+            const roc = cell(rocRow, col);
+            totalROC += typeof roc === "number" ? roc : parseFloat(roc) || 0;
+          }
+          if (ncRow !== 22 || rowLabels.nonCash !== undefined) {
+            const nc = cell(ncRow, col);
+            totalNonCash += typeof nc === "number" ? nc : parseFloat(nc) || 0;
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  // Handle percentage method
   if (calcMethod === "percent" && totalPerUnitSum > 0) {
     totalNonCash = (totalNonCash / 100) * totalPerUnitSum;
     totalROC = (totalROC / 100) * totalPerUnitSum;
-  }
-
-  // If exact positions found nothing, fall back to label scanning
-  if (columnsFound === 0) {
-    const fallback = parseCDSExcelByLabels(ws, range);
-    if (fallback.found) return { ...fallback, symbol, fundName };
   }
 
   // Format record date
@@ -614,124 +656,127 @@ function parseCDSExcel(data) {
   };
 }
 
-// Fallback: scan for labels in the spreadsheet (for non-standard layouts)
-function parseCDSExcelByLabels(ws, range) {
-  let roc = 0, nc = 0, calcMethod = "dollar", totalDist = 0;
-  for (let r = range.s.r; r <= range.e.r; r++) {
-    let label = "";
-    for (let c = range.s.c; c <= Math.min(range.e.c, 3); c++) {
-      const v = ws[XLSX.utils.encode_cell({ r, c })];
-      if (v && typeof v.v === "string") label += " " + v.v;
-    }
-    label = label.toLowerCase();
-    const findNum = () => {
-      for (let c = 1; c <= Math.min(range.e.c, 20); c++) {
-        const v = ws[XLSX.utils.encode_cell({ r, c })];
-        if (v && typeof v.v === "number" && v.v !== 0) return v.v;
-      }
-      return 0;
-    };
-    if (label.includes("return of capital") && !label.includes("total")) roc = findNum();
-    if ((label.includes("non-cash") || label.includes("non cash")) && label.includes("total")) nc = findNum();
-    if (nc === 0 && (label.includes("non-cash dist") || label.includes("non cash dist"))) nc = findNum();
-    if (label.includes("calculation method") && (label.includes("cent") || label.includes("%"))) calcMethod = "percent";
-    if (label.includes("total distribution") && label.includes("per unit")) totalDist = findNum();
-  }
-  if (calcMethod === "percent" && totalDist > 0) { roc = (roc / 100) * totalDist; nc = (nc / 100) * totalDist; }
-  return { found: roc > 0 || nc > 0, calcMethod, perUnit: { nonCashDistribution: Math.round(nc * 1e6) / 1e6, returnOfCapital: Math.round(roc * 1e6) / 1e6 } };
-}
-
 // Parse CDS PDF — extract text and scan for distribution labels + values
 async function parseCDSPdf(data, onLog) {
   const log = onLog || (() => {});
   const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(data) }).promise;
   log(`PDF: ${pdf.numPages} page(s)`);
 
-  // Extract text from all pages, preserving layout order
-  const lines = [];
+  // Extract text from all pages, preserving layout as rows with positioned items
+  const allItems = []; // { page, y, x, text }
   for (let p = 1; p <= pdf.numPages; p++) {
     const page = await pdf.getPage(p);
     const tc = await page.getTextContent();
-    // Group items by Y position to reconstruct lines
-    const byY = {};
     for (const item of tc.items) {
       if (!item.str || !item.str.trim()) continue;
-      const y = Math.round(item.transform[5]); // Y coordinate
-      if (!byY[y]) byY[y] = [];
-      byY[y].push({ x: item.transform[4], text: item.str });
-    }
-    // Sort Y descending (top of page first), X ascending within each line
-    const sortedYs = Object.keys(byY).map(Number).sort((a, b) => b - a);
-    for (const y of sortedYs) {
-      const lineItems = byY[y].sort((a, b) => a.x - b.x);
-      lines.push(lineItems.map(i => i.text).join(" "));
+      allItems.push({ page: p, y: Math.round(item.transform[5]), x: Math.round(item.transform[4]), text: item.str.trim() });
     }
   }
 
-  log(`Extracted ${lines.length} text lines from PDF`);
-  if (lines.length > 0) log(`First 5 lines: ${lines.slice(0, 5).join(" | ")}`);
+  // Group items into lines (same page + Y within tolerance of 3px)
+  allItems.sort((a, b) => a.page - b.page || b.y - a.y || a.x - b.x);
+  const lines = [];
+  let curLine = null;
+  for (const item of allItems) {
+    if (!curLine || curLine.page !== item.page || Math.abs(curLine.y - item.y) > 3) {
+      curLine = { page: item.page, y: item.y, items: [] };
+      lines.push(curLine);
+    }
+    curLine.items.push(item);
+  }
+  // Build text for each line, and keep separate items for value extraction
+  const textLines = lines.map(l => {
+    l.items.sort((a, b) => a.x - b.x);
+    l.text = l.items.map(i => i.text).join(" ");
+    return l;
+  });
+
+  log(`Extracted ${textLines.length} text lines from PDF`);
+  if (textLines.length > 0) log(`First 5 lines: ${textLines.slice(0, 5).map(l => l.text).join(" | ")}`);
 
   // Scan lines for fund info and distribution values
   let fundName = "", symbol = "", recordDate = "";
   let totalNonCash = 0, totalROC = 0, totalDist = 0;
   let calcMethod = "dollar";
 
-  // Utility: extract a number that follows a label on the same line or the next
-  const extractNum = (text) => {
-    const nums = text.match(/-?\d+\.\d+/g);
-    if (nums) return nums.map(Number);
+  // Extract all decimal numbers from a line's items (positioned after the label text)
+  const extractNums = (line) => {
+    const nums = [];
+    for (const item of line.items) {
+      const m = item.text.match(/^-?\d+\.\d+$/);
+      if (m) nums.push(Number(m[0]));
+    }
+    // Also try the full line text for inline numbers
+    if (nums.length === 0) {
+      const m = line.text.match(/-?\d+\.\d+/g);
+      if (m) return m.map(Number);
+    }
+    return nums;
+  };
+
+  // Extract numbers from the next line (for labels where values are on the row below)
+  const extractNumsNext = (idx) => {
+    if (idx + 1 < textLines.length) return extractNums(textLines[idx + 1]);
     return [];
   };
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const lower = line.toLowerCase();
+  for (let i = 0; i < textLines.length; i++) {
+    const line = textLines[i];
+    const text = line.text;
+    const lower = text.toLowerCase();
 
     // Fund name: typically a long line in the header area
-    if (!fundName && i < 15 && line.trim().length > 15
-      && !/cds|tax breakdown|limited partner|income trust|page|date|cusip/i.test(line)) {
-      fundName = line.trim();
+    if (!fundName && i < 20 && text.length > 15
+      && !/cds|tax breakdown|limited partner|income trust|page\s*\d|date|cusip|record|payment|calc/i.test(text)) {
+      fundName = text;
     }
 
     // Symbol (ticker)
     if (!symbol && /symbol|ticker/i.test(lower)) {
-      const m = line.match(/[A-Z]{2,10}(?:\.[A-Z])?/);
+      const m = text.match(/[A-Z]{2,10}(?:\.[A-Z])?/);
       if (m) symbol = m[0];
     }
 
-    // Record date
+    // Record date — look for dates on the same line or on a "record date" header row's data columns
     if (/record\s*date/i.test(lower)) {
-      const m = line.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+      const m = text.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
       if (m) recordDate = `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+      else {
+        // Check the next line for dates
+        const nextText = i + 1 < textLines.length ? textLines[i + 1].text : "";
+        const m2 = nextText.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+        if (m2) recordDate = `${m2[1]}-${m2[2].padStart(2, "0")}-${m2[3].padStart(2, "0")}`;
+      }
     }
 
     // Calculation method
     if (/calc.*method/i.test(lower) && /cent|%/i.test(lower)) calcMethod = "percent";
 
-    // Return of Capital (per unit)
-    if (/return\s+of\s+capital/i.test(lower) && !/total\s+return/i.test(lower)) {
-      const nums = extractNum(line);
-      if (nums.length > 0) totalROC += nums.reduce((s, n) => s + n, 0);
-      else if (i + 1 < lines.length) {
-        const nextNums = extractNum(lines[i + 1]);
-        if (nextNums.length > 0) totalROC += nextNums.reduce((s, n) => s + n, 0);
+    // Return of Capital (Box 42 / cost base adjustment)
+    if ((/return\s+of\s+capital/i.test(lower) || /box\s*42/i.test(lower) || /cost\s+base\s+adjust/i.test(lower))
+      && !/total\s+return/i.test(lower)) {
+      let nums = extractNums(line);
+      if (nums.length === 0) nums = extractNumsNext(i);
+      if (nums.length > 0) {
+        log(`  ROC values found on line ${i}: [${nums.join(", ")}]`);
+        totalROC += nums.reduce((s, n) => s + n, 0);
       }
     }
 
-    // Non-Cash Distribution (total)
+    // Non-Cash Distribution
     if ((/non[-\s]?cash/i.test(lower) && /total|dist/i.test(lower))
       || (/total.*non[-\s]?cash/i.test(lower))) {
-      const nums = extractNum(line);
-      if (nums.length > 0) totalNonCash += nums.reduce((s, n) => s + n, 0);
-      else if (i + 1 < lines.length) {
-        const nextNums = extractNum(lines[i + 1]);
-        if (nextNums.length > 0) totalNonCash += nextNums.reduce((s, n) => s + n, 0);
+      let nums = extractNums(line);
+      if (nums.length === 0) nums = extractNumsNext(i);
+      if (nums.length > 0) {
+        log(`  Non-cash values found on line ${i}: [${nums.join(", ")}]`);
+        totalNonCash += nums.reduce((s, n) => s + n, 0);
       }
     }
 
     // Total distribution per unit (for percentage method)
     if (/total.*distribut.*per\s*unit/i.test(lower) || /total\s*\$\s*\/\s*unit/i.test(lower)) {
-      const nums = extractNum(line);
+      const nums = extractNums(line);
       if (nums.length > 0) totalDist = nums[0];
     }
   }
@@ -746,10 +791,13 @@ async function parseCDSPdf(data, onLog) {
   log(`PDF parse: nonCash=${totalNonCash}, ROC=${totalROC}, recordDate=${recordDate}`);
 
   // Log all lines that contain distribution-related keywords for debugging
-  const relevantLines = lines.filter(l => /non[-\s]?cash|return\s+of\s+capital|total.*dist|total\s*\$/i.test(l));
+  const relevantLines = textLines.filter(l => /non[-\s]?cash|return\s+of\s+capital|box\s*42|cost\s+base|total.*dist|total\s*\$/i.test(l.text));
   if (relevantLines.length > 0) {
     log(`Relevant lines found:`);
-    for (const rl of relevantLines.slice(0, 10)) log(`  "${rl}"`);
+    for (const rl of relevantLines.slice(0, 15)) log(`  "${rl.text}"`);
+  } else {
+    log(`WARNING: No lines matched distribution keywords. Dumping all lines for debugging:`);
+    for (const l of textLines.slice(0, 40)) log(`  [y=${l.y}] "${l.text}"`);
   }
 
   return {
@@ -858,10 +906,16 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
     return computeACB(txs).totalShares;
   }, [holdings, selectedYear]);
 
+  const sharesAtDate = useCallback((date) => {
+    const txs = holdings.filter(tx => tx.date <= date);
+    return computeACB(txs).totalShares;
+  }, [holdings]);
+
   const buildProposed = (nonCashPerUnit, rocPerUnit, recordDate, source) => {
     const txs = [], d = recordDate || `${selectedYear}-12-31`;
-    if (nonCashPerUnit > 0) txs.push({ id: uid(), date: d, type: "REINVESTED_CAP_GAINS", shares: sharesAtYearEnd, pricePerShare: nonCashPerUnit, commission: "0", amount: Math.round(nonCashPerUnit * sharesAtYearEnd * 1e6) / 1e6, note: `[CDS ${selectedYear}] Reinvested cap. gains $${nonCashPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: nonCashPerUnit, _comp: "Reinvested Cap. Gains" });
-    if (rocPerUnit > 0) txs.push({ id: uid(), date: d, type: "ROC", shares: sharesAtYearEnd, pricePerShare: rocPerUnit, commission: "0", amount: Math.round(rocPerUnit * sharesAtYearEnd * 1e6) / 1e6, note: `[CDS ${selectedYear}] ROC $${rocPerUnit}/u \u00d7 ${sharesAtYearEnd}`, _perUnit: rocPerUnit, _comp: "Return of Capital" });
+    const shares = sharesAtDate(d);
+    if (nonCashPerUnit > 0) txs.push({ id: uid(), date: d, type: "REINVESTED_CAP_GAINS", shares, pricePerShare: nonCashPerUnit, commission: "0", amount: Math.round(nonCashPerUnit * shares * 1e6) / 1e6, note: `[CDS ${selectedYear}] Reinvested cap. gains $${nonCashPerUnit}/u \u00d7 ${shares}`, _perUnit: nonCashPerUnit, _shares: shares, _comp: "Reinvested Cap. Gains" });
+    if (rocPerUnit > 0) txs.push({ id: uid(), date: d, type: "ROC", shares, pricePerShare: rocPerUnit, commission: "0", amount: Math.round(rocPerUnit * shares * 1e6) / 1e6, note: `[CDS ${selectedYear}] ROC $${rocPerUnit}/u \u00d7 ${shares}`, _perUnit: rocPerUnit, _shares: shares, _comp: "Return of Capital" });
     return txs;
   };
 
@@ -1160,7 +1214,7 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
                   <span style={{ color: txColor(tx.type), fontWeight: 600, fontSize: 13 }}>{tx._comp}</span>
                   <span style={{ fontSize: 11, color: "#6b7280", marginLeft: 6 }}>{tx.type === "ROC" ? "(decreases ACB)" : "(increases ACB)"}</span>
                   <div style={{ fontSize: 16, fontWeight: 700, color: "#fff", marginTop: 2 }}>{fmt(Number(tx.amount))}</div>
-                  <div style={{ fontSize: 11, color: "#6b7280" }}>${tx._perUnit}/unit × {sharesAtYearEnd}</div>
+                  <div style={{ fontSize: 11, color: "#6b7280" }}>${tx._perUnit}/unit × {tx._shares ?? sharesAtYearEnd} shares{tx.date !== `${selectedYear}-12-31` ? ` (as of ${tx.date})` : ""}</div>
                 </div>
                 <button onClick={() => setProposed(p => p.filter(t => t.id !== tx.id))} style={{ background: "none", border: "none", color: "#6b7280", fontSize: 18, cursor: "pointer" }}>✕</button>
               </div>
