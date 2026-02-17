@@ -690,7 +690,17 @@ async function parseCDSPdf(data, onLog) {
   }
 
   log(`Extracted ${rows.length} text rows from PDF`);
-  if (rows.length > 0) log(`First 5 rows: ${rows.slice(0, 5).map(l => l.text).join(" | ")}`);
+  // Dump all rows with index, y-position, and full text for debugging
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    log(`  Row[${i}] y=${r.y} pg=${r.page}: "${r.text}"`);
+    // Also show individual items with x-positions for key rows
+    if (/record\s*date|return\s+of\s+capital|non[-\s]?cash|total.*distribut.*per\s*unit|total\s*\$\s*\/\s*unit/i.test(r.text)) {
+      for (const item of r.items) {
+        log(`    item @x=${item.x}: "${item.text}"`);
+      }
+    }
+  }
 
   // ── Step 3: Extract metadata (fund name, symbol, calc method) ──
   let fundName = "", symbol = "", calcMethod = "dollar";
@@ -796,7 +806,12 @@ async function parseCDSPdf(data, onLog) {
         const dist = Math.abs(ni.x - cols[c].x);
         if (dist < bestDist) { bestDist = dist; bestIdx = c; }
       }
-      if (bestIdx >= 0 && bestDist < 80) values[bestIdx] = ni.value;
+      if (bestIdx >= 0 && bestDist < 80) {
+        log(`    matchToColumn: value=${ni.value} @x=${ni.x} → col[${bestIdx}] (colX=${cols[bestIdx].x}, dist=${bestDist})`);
+        values[bestIdx] = ni.value;
+      } else {
+        log(`    matchToColumn: value=${ni.value} @x=${ni.x} → NO MATCH (bestDist=${bestDist}, threshold=80)`);
+      }
     }
     return values;
   };
@@ -807,14 +822,27 @@ async function parseCDSPdf(data, onLog) {
   const distributions = [];
 
   log(`  Key rows: recordDate=${recordDateRowIdx}, totalNonCash=${totalNonCashRow}, rocRow=${rocRow}, totalDist=${totalDistRow}`);
+  if (recordDateRowIdx >= 0) log(`  Record date row text: "${rows[recordDateRowIdx].text}"`);
+  if (totalNonCashRow !== null) log(`  Total non-cash row text: "${rows[totalNonCashRow].text}"`);
+  if (rocRow !== null) log(`  ROC row text: "${rows[rocRow].text}"`);
+  if (totalDistRow !== null) log(`  Total dist row text: "${rows[totalDistRow].text}"`);
+  log(`  Columns: ${columns.length > 0 ? columns.map((c, i) => `[${i}] date=${c.recordDate} x=${c.x}`).join(" | ") : "NONE"}`);
 
   // Helper: extract values from a row (or next row if label-only), mapped to columns
-  const extractRowValues = (rowIdx) => {
+  const extractRowValues = (rowIdx, label) => {
     if (rowIdx === null || rowIdx < 0) return null;
     const numItems = extractNumItems(rows[rowIdx]);
-    if (numItems.length > 0) return numItems;
+    if (numItems.length > 0) {
+      log(`  extractRowValues("${label || "?"}" row=${rowIdx}): found ${numItems.length} nums on same row: ${numItems.map(n => `${n.value}@x=${n.x}`).join(", ")}`);
+      return numItems;
+    }
     // Values might be on the next row if this row is just the label
-    if (rowIdx + 1 < rows.length) return extractNumItems(rows[rowIdx + 1]);
+    if (rowIdx + 1 < rows.length) {
+      const nextItems = extractNumItems(rows[rowIdx + 1]);
+      log(`  extractRowValues("${label || "?"}" row=${rowIdx}): 0 nums on row, checked next row ${rowIdx + 1}: ${nextItems.length} nums: ${nextItems.map(n => `${n.value}@x=${n.x}`).join(", ")}`);
+      return nextItems;
+    }
+    log(`  extractRowValues("${label || "?"}" row=${rowIdx}): no nums found`);
     return [];
   };
 
@@ -822,13 +850,13 @@ async function parseCDSPdf(data, onLog) {
     // Get total $/unit per column (needed for percentage conversion)
     let totalDistPerCol = new Array(columns.length).fill(0);
     if (totalDistRow !== null) {
-      totalDistPerCol = matchToColumn(extractRowValues(totalDistRow) || [], columns);
+      totalDistPerCol = matchToColumn(extractRowValues(totalDistRow, "Total $/unit") || [], columns);
       log(`  Total $/unit per column: [${totalDistPerCol.join(", ")}]`);
     }
 
     // Extract Total Non-Cash Distributions per column
     if (totalNonCashRow !== null) {
-      const colValues = matchToColumn(extractRowValues(totalNonCashRow) || [], columns);
+      const colValues = matchToColumn(extractRowValues(totalNonCashRow, "Total Non-Cash") || [], columns);
       log(`  Total Non-Cash raw per column: [${colValues.join(", ")}]`);
       for (let c = 0; c < columns.length; c++) {
         let val = colValues[c];
@@ -844,7 +872,7 @@ async function parseCDSPdf(data, onLog) {
 
     // Extract Return of Capital per column
     if (rocRow !== null) {
-      const colValues = matchToColumn(extractRowValues(rocRow) || [], columns);
+      const colValues = matchToColumn(extractRowValues(rocRow, "Return of Capital") || [], columns);
       log(`  Return of Capital raw per column: [${colValues.join(", ")}]`);
       for (let c = 0; c < columns.length; c++) {
         let val = colValues[c];
