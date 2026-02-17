@@ -751,16 +751,14 @@ async function parseCDSPdf(data, onLog) {
     const lower = row.text.toLowerCase();
 
     if (!fundName && i < 20 && row.text.length > 15
-      && !/cds|tax breakdown|limited partner|income trust|page\s*\d|date|cusip|record|payment|calc|distribution\s*\d|^no\s+(yes|no)\b/i.test(row.text)) {
+      && !/cds|tax breakdown|limited partner|income trust|page\s*\d|date|cusip|record|payment|calc|distribution\s*\d|^no\s+(yes|no)\b|imp[oô]t|partie\s+xiii|statement.*allocation|etat\s+des|r[eé]partition/i.test(row.text)) {
       fundName = row.text;
     }
-    // Also try to extract trust name from the row that contains "TRUST NAME" or the large header row
+    // Also try to extract trust name from the row containing "TRUST NAME" or the large header row with structured data
     if (/trust\s+name/i.test(lower)) {
-      // Look for the actual trust name in a nearby row that has structured data
-      for (let j = Math.max(0, i - 5); j < Math.min(rows.length, i + 5); j++) {
+      for (let j = 0; j < rows.length; j++) {
         const r = rows[j];
         if (r.items.length > 5 && /total\s+distribution/i.test(r.text)) {
-          // The first item of this structured row is often the fund name
           const nameItem = r.items[0];
           if (nameItem && nameItem.text.length > 5 && !/total|record|payment|cusip/i.test(nameItem.text)) {
             fundName = nameItem.text;
@@ -770,26 +768,31 @@ async function parseCDSPdf(data, onLog) {
       }
     }
     if (!symbol && /symbol|ticker/i.test(lower)) {
-      // Look for actual ticker symbols near the SYMBOL label — skip the label word itself
-      // First check if there's a standalone ticker on a nearby row
-      for (let j = Math.max(0, i - 3); j <= Math.min(rows.length - 1, i + 3); j++) {
-        const nearby = rows[j].text;
-        // Match standalone ticker-like text (2-6 uppercase chars, optionally with .XX suffix)
-        const tm = nearby.match(/\b([A-Z]{2,6}(?:\.[A-Z]{1,2})?)\b/g);
-        if (tm) {
-          for (const candidate of tm) {
-            if (!/^(SYMBOL|SYMBOLE|TICKER|WEBSITE|CUSIP|TRUST|PHONE|EMAIL|RATE|CAD|CAN|USD|CAD|BOX|TIN|NOTES|AMENDED|POSTING|PROVINCE|CODE|CITY|FISCAL|ADDRESS|POSTAL|OTHER|INCOME|TOTAL|RETURN|CAPITAL|TAX|PART|PRIX|DATE|NOM|QUÉBEC|QUEBEC|CURRENCY|DEVISE|COUNTRY|NAME|WEB)$/i.test(candidate)) {
-                symbol = candidate;
-                break;
-              }
+      // Search nearby rows for ticker, working outward from SYMBOL row (closest first)
+      const skipWords = /^(SYMBOL|SYMBOLE|TICKER|WEBSITE|CUSIP|TRUST|PHONE|EMAIL|RATE|CAD|CAN|USD|BOX|TIN|NOTES|AMENDED|POSTING|PROVINCE|CODE|CITY|FISCAL|ADDRESS|POSTAL|OTHER|INCOME|TOTAL|RETURN|CAPITAL|TAX|PART|PRIX|DATE|NOM|SITE|WEB|ETAT|DES|REVENUS|FIDUCIE|STATEMENT|ACT|WWW|COM|HTTP)$/i;
+      // Search in order: same row, then ±1, ±2, ±3
+      for (let dist = 0; dist <= 3 && !symbol; dist++) {
+        const candidates = dist === 0 ? [i] : [i - dist, i + dist];
+        for (const j of candidates) {
+          if (j < 0 || j >= rows.length) continue;
+          // Check individual items first (more precise)
+          for (const item of rows[j].items) {
+            const trimmed = item.text.trim();
+            if (/^[A-Z]{2,6}(\.[A-Z]{1,2})?$/.test(trimmed) && !skipWords.test(trimmed)) {
+              symbol = trimmed;
+              break;
+            }
+          }
+          if (symbol) break;
+          // Fallback: try regex on full row text
+          const tm = rows[j].text.match(/\b([A-Z]{2,6}(?:\.[A-Z]{1,2})?)\b/g);
+          if (tm) {
+            for (const candidate of tm) {
+              if (!skipWords.test(candidate)) { symbol = candidate; break; }
+            }
           }
           if (symbol) break;
         }
-      }
-      // Fallback: grab first uppercase match that isn't the label
-      if (!symbol) {
-        const m = row.text.match(/[A-Z]{2,10}(?:\.[A-Z])?/);
-        if (m && !/SYMBOL|SYMBOLE|TICKER/i.test(m[0])) symbol = m[0];
       }
     }
     if (/calc.*method/i.test(lower) && /cent|%/i.test(lower)) calcMethod = "percent";
@@ -936,17 +939,34 @@ async function parseCDSPdf(data, onLog) {
       }
     }
 
-    // Step B: Determine x-positions of key header columns
+    // Step B: Determine x-positions of ALL header columns (for nearest-column matching)
+    const headerColumns = []; // { x, label }
     let nonCashHeaderX = -1, rocHeaderX = -1, totalDistHeaderX = -1;
     if (headerRow) {
       for (const item of headerRow.items) {
-        const t = item.text.toLowerCase();
-        if (/total\s+non\s*cash\s+distribution/i.test(t)) nonCashHeaderX = item.x;
-        if (/^return\s+of\s+capital$/i.test(t)) rocHeaderX = item.x;
-        if (/^total\s+distribution\s*\(\$\)\s*per\s*unit$/i.test(t)) totalDistHeaderX = item.x;
+        const t = item.text;
+        const tl = t.toLowerCase();
+        // Only track columns that are numeric data headers (not address/metadata)
+        if (/total\s+distribution|record\s*date|payment\s*date|cash\s+distribution|income|capital\s*gain|dividend|foreign|return\s+of\s+capital|non\s*reportable|deduction|tax\s+paid|total\s+income\s+alloc/i.test(tl)) {
+          headerColumns.push({ x: item.x, label: t });
+        }
+        if (/total\s+non\s*cash\s+distribution/i.test(tl)) nonCashHeaderX = item.x;
+        if (/^return\s+of\s+capital$/i.test(tl)) rocHeaderX = item.x;
+        if (/^total\s+distribution\s*\(\$\)\s*per\s*unit$/i.test(tl)) totalDistHeaderX = item.x;
       }
       log(`  Row-based header X positions: totalDist=${totalDistHeaderX}, nonCash=${nonCashHeaderX}, ROC=${rocHeaderX}`);
+      log(`  Row-based: ${headerColumns.length} header columns tracked`);
     }
+
+    // Helper: find which header column an x-position is closest to
+    const findClosestHeader = (x) => {
+      let best = null, bestDist = Infinity;
+      for (const hc of headerColumns) {
+        const d = Math.abs(x - hc.x);
+        if (d < bestDist) { bestDist = d; best = hc; }
+      }
+      return best;
+    };
 
     // Step C: Find "Distribution N" rows with inline data
     const distRowRe = /\bDistribution\s+(\d+)\b/i;
@@ -955,12 +975,18 @@ async function parseCDSPdf(data, onLog) {
       const m = rows[i].text.match(distRowRe);
       if (!m) continue;
       const distNum = parseInt(m[1], 10);
-      // Must have at least one date (record date) to be a data row
-      const dates = extractDateItems(rows[i]);
-      const nums = extractNumItems(rows[i]);
+      // Find the x position of the "Distribution N" label in items
+      let distLabelX = 0;
+      for (const item of rows[i].items) {
+        if (/Distribution\s+\d+/i.test(item.text)) { distLabelX = item.x; break; }
+      }
+      // Only consider dates and numbers that appear AFTER the distribution label (x >= distLabelX)
+      // This filters out preparer info that may be on the same row
+      const dates = extractDateItems(rows[i]).filter(d => d.x >= distLabelX);
+      const nums = extractNumItems(rows[i]).filter(n => n.x >= distLabelX);
       if (dates.length >= 1 && nums.length >= 3) {
-        distRows.push({ idx: i, distNum, row: rows[i], dates, nums });
-        log(`  Row-based: Distribution ${distNum} at row[${i}] — ${dates.length} dates, ${nums.length} nums`);
+        distRows.push({ idx: i, distNum, row: rows[i], dates, nums, distLabelX });
+        log(`  Row-based: Distribution ${distNum} at row[${i}] (labelX=${distLabelX}) — ${dates.length} dates, ${nums.length} nums`);
       }
     }
 
@@ -971,49 +997,48 @@ async function parseCDSPdf(data, onLog) {
       distRows.sort((a, b) => a.distNum - b.distNum);
 
       for (const dr of distRows) {
-        const recordDate = dr.dates[0].date; // First date is record date
+        const recordDate = dr.dates[0].date; // First date (after label) is record date
 
-        // Try to match values by header x-positions
+        // Try to match values by header x-positions using nearest-column assignment
         let nonCashVal = 0, rocVal = 0;
 
-        if (nonCashHeaderX > 0) {
-          // Find the numeric item closest to the non-cash header x
-          let bestDist = Infinity, bestVal = 0;
+        if (nonCashHeaderX > 0 && headerColumns.length > 0) {
+          // For each numeric item, find its CLOSEST header column.
+          // Only use the item if its closest header IS the non-cash header.
           for (const ni of dr.nums) {
-            const d = Math.abs(ni.x - nonCashHeaderX);
-            if (d < bestDist) { bestDist = d; bestVal = ni.value; }
+            const closest = findClosestHeader(ni.x);
+            if (closest && closest.x === nonCashHeaderX) {
+              nonCashVal = ni.value;
+              log(`    Dist ${dr.distNum}: nonCash item @x=${ni.x} → ${ni.value} (closest header "${closest.label}" @x=${closest.x})`);
+              break;
+            }
           }
-          if (bestDist < 80) nonCashVal = bestVal;
-          log(`    Dist ${dr.distNum}: nonCash match x=${nonCashHeaderX} → val=${nonCashVal} (dist=${bestDist})`);
+          if (nonCashVal === 0) log(`    Dist ${dr.distNum}: no item maps to nonCash header @x=${nonCashHeaderX}`);
         }
 
-        if (rocHeaderX > 0) {
-          let bestDist = Infinity, bestVal = 0;
+        if (rocHeaderX > 0 && headerColumns.length > 0) {
           for (const ni of dr.nums) {
-            const d = Math.abs(ni.x - rocHeaderX);
-            if (d < bestDist) { bestDist = d; bestVal = ni.value; }
+            const closest = findClosestHeader(ni.x);
+            if (closest && closest.x === rocHeaderX) {
+              rocVal = ni.value;
+              log(`    Dist ${dr.distNum}: ROC item @x=${ni.x} → ${ni.value} (closest header "${closest.label}" @x=${closest.x})`);
+              break;
+            }
           }
-          if (bestDist < 80) rocVal = bestVal;
-          log(`    Dist ${dr.distNum}: ROC match x=${rocHeaderX} → val=${rocVal} (dist=${bestDist})`);
+          if (rocVal === 0) log(`    Dist ${dr.distNum}: no item maps to ROC header @x=${rocHeaderX}`);
         }
 
         // Fallback: if no header x-positions, use positional parsing
-        // Order: totalDist, [recordDate, paymentDate], cash, nonCash, income, capGain, ...
         if (nonCashHeaderX <= 0 && rocHeaderX <= 0) {
-          // Sort numeric items by x position
           const sorted = [...dr.nums].sort((a, b) => a.x - b.x);
-          // Filter out numbers that are likely dates (already extracted)
           const dateXSet = new Set(dr.dates.map(d => d.x));
           const pureNums = sorted.filter(n => !dateXSet.has(n.x));
-          // Positional: [0]=totalDist, [1]=cash, [2]=nonCash (if cash≠total), or [2]=income
           if (pureNums.length >= 3) {
             const total = pureNums[0].value;
             const cash = pureNums[1].value;
-            if (Math.abs(cash - total) > 0.000001 && pureNums.length >= 3) {
-              // Cash ≠ Total means non-cash is present as 3rd value
+            if (Math.abs(cash - total) > 0.000001) {
               nonCashVal = pureNums[2].value;
             }
-            // ROC is harder to find positionally — skip unless header available
           }
           log(`    Dist ${dr.distNum}: positional fallback nonCash=${nonCashVal}`);
         }
