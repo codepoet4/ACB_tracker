@@ -695,7 +695,7 @@ async function parseCDSPdf(data, onLog) {
     const r = rows[i];
     log(`  Row[${i}] y=${r.y} pg=${r.page}: "${r.text}"`);
     // Also show individual items with x-positions for key rows
-    if (/record\s*date|return\s+of\s+capital|non[-\s]?cash|total.*distribut.*per\s*unit|total\s*\$\s*\/\s*unit/i.test(r.text)) {
+    if (/record\s*date|return\s+of\s+capital|non[-\s]?cash|total.*distribut.*per\s*unit|total\s*\$\s*\/\s*unit|Distribution\s+\d+.*\d{4}-\d{2}-\d{2}/i.test(r.text)) {
       for (const item of r.items) {
         log(`    item @x=${item.x}: "${item.text}"`);
       }
@@ -751,12 +751,46 @@ async function parseCDSPdf(data, onLog) {
     const lower = row.text.toLowerCase();
 
     if (!fundName && i < 20 && row.text.length > 15
-      && !/cds|tax breakdown|limited partner|income trust|page\s*\d|date|cusip|record|payment|calc/i.test(row.text)) {
+      && !/cds|tax breakdown|limited partner|income trust|page\s*\d|date|cusip|record|payment|calc|distribution\s*\d|^no\s+(yes|no)\b/i.test(row.text)) {
       fundName = row.text;
     }
+    // Also try to extract trust name from the row that contains "TRUST NAME" or the large header row
+    if (/trust\s+name/i.test(lower)) {
+      // Look for the actual trust name in a nearby row that has structured data
+      for (let j = Math.max(0, i - 5); j < Math.min(rows.length, i + 5); j++) {
+        const r = rows[j];
+        if (r.items.length > 5 && /total\s+distribution/i.test(r.text)) {
+          // The first item of this structured row is often the fund name
+          const nameItem = r.items[0];
+          if (nameItem && nameItem.text.length > 5 && !/total|record|payment|cusip/i.test(nameItem.text)) {
+            fundName = nameItem.text;
+          }
+          break;
+        }
+      }
+    }
     if (!symbol && /symbol|ticker/i.test(lower)) {
-      const m = row.text.match(/[A-Z]{2,10}(?:\.[A-Z])?/);
-      if (m) symbol = m[0];
+      // Look for actual ticker symbols near the SYMBOL label — skip the label word itself
+      // First check if there's a standalone ticker on a nearby row
+      for (let j = Math.max(0, i - 3); j <= Math.min(rows.length - 1, i + 3); j++) {
+        const nearby = rows[j].text;
+        // Match standalone ticker-like text (2-6 uppercase chars, optionally with .XX suffix)
+        const tm = nearby.match(/\b([A-Z]{2,6}(?:\.[A-Z]{1,2})?)\b/g);
+        if (tm) {
+          for (const candidate of tm) {
+            if (!/^(SYMBOL|SYMBOLE|TICKER|WEBSITE|CUSIP|TRUST|PHONE|EMAIL|RATE|CAD|CAN|USD|CAD|BOX|TIN|NOTES|AMENDED|POSTING|PROVINCE|CODE|CITY|FISCAL|ADDRESS|POSTAL|OTHER|INCOME|TOTAL|RETURN|CAPITAL|TAX|PART|PRIX|DATE|NOM|QUÉBEC|QUEBEC|CURRENCY|DEVISE|COUNTRY|NAME|WEB)$/i.test(candidate)) {
+                symbol = candidate;
+                break;
+              }
+          }
+          if (symbol) break;
+        }
+      }
+      // Fallback: grab first uppercase match that isn't the label
+      if (!symbol) {
+        const m = row.text.match(/[A-Z]{2,10}(?:\.[A-Z])?/);
+        if (m && !/SYMBOL|SYMBOLE|TICKER/i.test(m[0])) symbol = m[0];
+      }
     }
     if (/calc.*method/i.test(lower) && /cent|%/i.test(lower)) calcMethod = "percent";
 
@@ -886,46 +920,159 @@ async function parseCDSPdf(data, onLog) {
       }
     }
   } else {
-    // No column structure detected — fall back to flat extraction
-    log("WARNING: No column structure detected (no record date row with dates). Falling back to flat extraction.");
-    const extractNums = (row) => {
-      const nums = [];
-      for (const item of row.items) {
-        const cleaned = item.text.replace(/[$%,]/g, "").trim();
-        const m = cleaned.match(/^-?\d+(?:\.\d+)?$/);
-        if (m) nums.push(Number(m[0]));
-      }
-      if (nums.length === 0) { const m = row.text.match(/-?\d+(?:\.\d+)?/g); if (m) return m.map(Number); }
-      return nums;
-    };
-    let fallbackDate = "";
-    for (const row of rows) {
-      if (/record\s*date/i.test(row.text.toLowerCase())) {
-        const m = row.text.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-        if (m) fallbackDate = `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+    // No column structure detected — try row-based distribution format
+    // Many PDFs (e.g. Vanguard) have "Distribution N" rows where each row contains
+    // all values inline: Distribution N  <totalDist> <recordDate> <paymentDate> <cash> <nonCash> <income> <capGain> ... <ROC> ...
+    log("WARNING: No column structure detected (no record date row with dates). Trying row-based distribution format.");
+
+    // Step A: Find the header row that defines column order (contains "Total Distribution" and "Record Date" etc.)
+    let headerRow = null;
+    for (let i = 0; i < rows.length; i++) {
+      const lower = rows[i].text.toLowerCase();
+      if (/total\s+distribution.*per\s*unit/i.test(lower) && /record\s*date/i.test(lower)) {
+        headerRow = rows[i];
+        log(`  Row-based: found header row at [${i}]: "${rows[i].text.slice(0, 120)}..."`);
+        break;
       }
     }
-    let totalDist = 0;
-    if (totalDistRow !== null) {
-      const nums = extractNums(rows[totalDistRow]);
-      if (nums.length > 0) totalDist = nums.reduce((s, n) => s + n, 0);
+
+    // Step B: Determine x-positions of key header columns
+    let nonCashHeaderX = -1, rocHeaderX = -1, totalDistHeaderX = -1;
+    if (headerRow) {
+      for (const item of headerRow.items) {
+        const t = item.text.toLowerCase();
+        if (/total\s+non\s*cash\s+distribution/i.test(t)) nonCashHeaderX = item.x;
+        if (/^return\s+of\s+capital$/i.test(t)) rocHeaderX = item.x;
+        if (/^total\s+distribution\s*\(\$\)\s*per\s*unit$/i.test(t)) totalDistHeaderX = item.x;
+      }
+      log(`  Row-based header X positions: totalDist=${totalDistHeaderX}, nonCash=${nonCashHeaderX}, ROC=${rocHeaderX}`);
     }
-    // Use totalNonCashRow for non-cash distributions
-    if (totalNonCashRow !== null) {
-      const nums = extractNums(rows[totalNonCashRow]);
-      if (nums.length > 0) {
-        let val = nums.reduce((s, n) => s + n, 0);
-        if (calcMethod === "percent" && totalDist > 0) val = (nums[0] / 100) * totalDist;
-        distributions.push({ label: "Non-Cash Distribution", type: "nonCash", recordDate: fallbackDate, value: Math.round(val * 1e6) / 1e6 });
+
+    // Step C: Find "Distribution N" rows with inline data
+    const distRowRe = /\bDistribution\s+(\d+)\b/i;
+    const distRows = [];
+    for (let i = 0; i < rows.length; i++) {
+      const m = rows[i].text.match(distRowRe);
+      if (!m) continue;
+      const distNum = parseInt(m[1], 10);
+      // Must have at least one date (record date) to be a data row
+      const dates = extractDateItems(rows[i]);
+      const nums = extractNumItems(rows[i]);
+      if (dates.length >= 1 && nums.length >= 3) {
+        distRows.push({ idx: i, distNum, row: rows[i], dates, nums });
+        log(`  Row-based: Distribution ${distNum} at row[${i}] — ${dates.length} dates, ${nums.length} nums`);
       }
     }
-    // Use rocRow for return of capital
-    if (rocRow !== null) {
-      const nums = extractNums(rows[rocRow]);
-      if (nums.length > 0) {
-        let val = nums.reduce((s, n) => s + n, 0);
-        if (calcMethod === "percent" && totalDist > 0) val = (nums[0] / 100) * totalDist;
-        distributions.push({ label: "Return of Capital", type: "roc", recordDate: fallbackDate, value: Math.round(val * 1e6) / 1e6 });
+
+    if (distRows.length > 0) {
+      log(`  Row-based: found ${distRows.length} distribution data rows`);
+
+      // Sort by distribution number
+      distRows.sort((a, b) => a.distNum - b.distNum);
+
+      for (const dr of distRows) {
+        const recordDate = dr.dates[0].date; // First date is record date
+
+        // Try to match values by header x-positions
+        let nonCashVal = 0, rocVal = 0;
+
+        if (nonCashHeaderX > 0) {
+          // Find the numeric item closest to the non-cash header x
+          let bestDist = Infinity, bestVal = 0;
+          for (const ni of dr.nums) {
+            const d = Math.abs(ni.x - nonCashHeaderX);
+            if (d < bestDist) { bestDist = d; bestVal = ni.value; }
+          }
+          if (bestDist < 80) nonCashVal = bestVal;
+          log(`    Dist ${dr.distNum}: nonCash match x=${nonCashHeaderX} → val=${nonCashVal} (dist=${bestDist})`);
+        }
+
+        if (rocHeaderX > 0) {
+          let bestDist = Infinity, bestVal = 0;
+          for (const ni of dr.nums) {
+            const d = Math.abs(ni.x - rocHeaderX);
+            if (d < bestDist) { bestDist = d; bestVal = ni.value; }
+          }
+          if (bestDist < 80) rocVal = bestVal;
+          log(`    Dist ${dr.distNum}: ROC match x=${rocHeaderX} → val=${rocVal} (dist=${bestDist})`);
+        }
+
+        // Fallback: if no header x-positions, use positional parsing
+        // Order: totalDist, [recordDate, paymentDate], cash, nonCash, income, capGain, ...
+        if (nonCashHeaderX <= 0 && rocHeaderX <= 0) {
+          // Sort numeric items by x position
+          const sorted = [...dr.nums].sort((a, b) => a.x - b.x);
+          // Filter out numbers that are likely dates (already extracted)
+          const dateXSet = new Set(dr.dates.map(d => d.x));
+          const pureNums = sorted.filter(n => !dateXSet.has(n.x));
+          // Positional: [0]=totalDist, [1]=cash, [2]=nonCash (if cash≠total), or [2]=income
+          if (pureNums.length >= 3) {
+            const total = pureNums[0].value;
+            const cash = pureNums[1].value;
+            if (Math.abs(cash - total) > 0.000001 && pureNums.length >= 3) {
+              // Cash ≠ Total means non-cash is present as 3rd value
+              nonCashVal = pureNums[2].value;
+            }
+            // ROC is harder to find positionally — skip unless header available
+          }
+          log(`    Dist ${dr.distNum}: positional fallback nonCash=${nonCashVal}`);
+        }
+
+        if (nonCashVal > 0) {
+          distributions.push({
+            label: "Non-Cash Distribution", type: "nonCash",
+            recordDate,
+            value: Math.round(nonCashVal * 1e6) / 1e6,
+          });
+        }
+        if (rocVal > 0) {
+          distributions.push({
+            label: "Return of Capital", type: "roc",
+            recordDate,
+            value: Math.round(rocVal * 1e6) / 1e6,
+          });
+        }
+      }
+    } else {
+      // Final fallback: original flat extraction for very simple PDFs
+      log("  Row-based: no Distribution N rows found either. Using simple flat extraction.");
+      const extractNums = (row) => {
+        const nums = [];
+        for (const item of row.items) {
+          const cleaned = item.text.replace(/[$%,]/g, "").trim();
+          const m = cleaned.match(/^-?\d+(?:\.\d+)?$/);
+          if (m) nums.push(Number(m[0]));
+        }
+        if (nums.length === 0) { const m = row.text.match(/-?\d+(?:\.\d+)?/g); if (m) return m.map(Number); }
+        return nums;
+      };
+      let fallbackDate = "";
+      for (const row of rows) {
+        if (/record\s*date/i.test(row.text.toLowerCase())) {
+          const m = row.text.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+          if (m) fallbackDate = `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+        }
+      }
+      let totalDist = 0;
+      if (totalDistRow !== null) {
+        const nums = extractNums(rows[totalDistRow]);
+        if (nums.length > 0) totalDist = nums.reduce((s, n) => s + n, 0);
+      }
+      if (totalNonCashRow !== null) {
+        const nums = extractNums(rows[totalNonCashRow]);
+        if (nums.length > 0) {
+          let val = nums.reduce((s, n) => s + n, 0);
+          if (calcMethod === "percent" && totalDist > 0) val = (nums[0] / 100) * totalDist;
+          distributions.push({ label: "Non-Cash Distribution", type: "nonCash", recordDate: fallbackDate, value: Math.round(val * 1e6) / 1e6 });
+        }
+      }
+      if (rocRow !== null) {
+        const nums = extractNums(rows[rocRow]);
+        if (nums.length > 0) {
+          let val = nums.reduce((s, n) => s + n, 0);
+          if (calcMethod === "percent" && totalDist > 0) val = (nums[0] / 100) * totalDist;
+          distributions.push({ label: "Return of Capital", type: "roc", recordDate: fallbackDate, value: Math.round(val * 1e6) / 1e6 });
+        }
       }
     }
   }
