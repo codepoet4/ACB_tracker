@@ -1360,7 +1360,21 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
           )}
         </div>
       )}
-      {status === "noitems" && <div style={{ background: "#0c1222", borderRadius: 8, padding: 12, fontSize: 13, color: "#60a5fa" }}>No ACB-affecting components (Return of Capital or Non-Cash Distribution) found for {selectedYear}. The values may be zero, or this may be the wrong fund.</div>}
+      {status === "noitems" && (
+        <div style={{ background: "#0c1222", borderRadius: 8, padding: 12, fontSize: 13, color: "#60a5fa" }}>
+          No ACB-affecting components (Return of Capital or Non-Cash Distribution) found for {selectedYear}. The values may be zero, or this may be the wrong fund.
+          {logs.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <button onClick={() => setShowLogs(v => !v)} style={{ ...S.btnSm("#252d3d"), fontSize: 11, border: "1px solid #374151" }}>{showLogs ? "Hide" : "Show"} Log ({logs.length})</button>
+              {showLogs && (
+                <div style={{ background: "#0d1117", borderRadius: 6, padding: 8, marginTop: 6, maxHeight: 300, overflowY: "auto", fontFamily: "monospace", fontSize: 10, lineHeight: 1.4, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                  {logs.map((l, i) => <div key={i} style={{ color: l.msg.startsWith("ERROR") || l.msg.includes("failed") || l.msg.includes("Error") ? "#f87171" : l.msg.includes("Success") || l.msg.includes("OK") ? "#34d399" : "#8b949e" }}><span style={{ color: "#484f58" }}>{l.time}</span> {l.msg}</div>)}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {status === "error" && (
         <div style={{ background: "#1c1017", borderRadius: 8, padding: 12, fontSize: 13, color: "#f87171", marginBottom: 8 }}>
           {errMsg}
@@ -1405,6 +1419,16 @@ function ETFPanel({ symbol, holdings, onAdd, onClose }) {
             {sourceFileUrl.current && <button onClick={() => window.open(sourceFileUrl.current, "_blank")} style={{ ...S.btn("#4f46e5"), flex: 0, minWidth: 80 }}>View Source</button>}
             <button onClick={() => { setStatus("idle"); setProposed([]); }} style={{ ...S.btn("#374151"), flex: 0, minWidth: 80 }}>Cancel</button>
           </div>
+          {logs.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <button onClick={() => setShowLogs(v => !v)} style={{ ...S.btnSm("#252d3d"), fontSize: 11, border: "1px solid #374151" }}>{showLogs ? "Hide" : "Show"} Log ({logs.length})</button>
+              {showLogs && (
+                <div style={{ background: "#0d1117", borderRadius: 6, padding: 8, marginTop: 6, maxHeight: 300, overflowY: "auto", fontFamily: "monospace", fontSize: 10, lineHeight: 1.4, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                  {logs.map((l, i) => <div key={i} style={{ color: l.msg.startsWith("ERROR") || l.msg.includes("failed") || l.msg.includes("Error") ? "#f87171" : l.msg.includes("Success") || l.msg.includes("OK") ? "#34d399" : "#8b949e" }}><span style={{ color: "#484f58" }}>{l.time}</span> {l.msg}</div>)}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
       {status === "applied" && <div style={{ background: "#052e16", border: "1px solid #166534", borderRadius: 8, padding: 12, fontSize: 14, color: "#34d399", textAlign: "center", marginTop: 8 }}>Applied for {selectedYear}</div>}
