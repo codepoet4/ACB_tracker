@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import * as Papa from "papaparse";
 import * as XLSX from "xlsx";
-import jsPDF from "jspdf";
-import autoTable from "jspdf-autotable";
+import { jsPDF } from "jspdf";
+import autoTablePlugin from "jspdf-autotable";
+const autoTable = autoTablePlugin.default || autoTablePlugin;
 import * as pdfjsLib from "pdfjs-dist";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
-const APP_VERSION = "1.6.6";
+const APP_VERSION = "1.6.7";
 const uid = () => Math.random().toString(36).slice(2, 10);
 let _dp = 2;
 const fmt = (n) => { const v = (n != null && !isNaN(n)) ? Number(n) : 0; return `$${v.toLocaleString("en-CA", { minimumFractionDigits: _dp, maximumFractionDigits: _dp })}`; };
@@ -181,22 +182,23 @@ function exportSchedule3PDF(report, portfolioName, year) {
 
   autoTable(doc, {
     startY: 40,
-    head: [["Description", "Year\nAcquired", "Proceeds of\nDisposition", "Adjusted\nCost Base", "Outlays &\nExpenses", "Gain (Loss)"]],
+    head: [["Description", "Date of\nDisposition", "Year\nAcquired", "Proceeds of\nDisposition", "Adjusted\nCost Base", "Outlays &\nExpenses", "Gain (Loss)"]],
     body: report.rows.map(r => r.type === "STOCK_SPLIT"
-      ? [shortSym(r.symbol, 30), { content: r.note || "Stock Split", colSpan: 5, styles: { fontStyle: "italic", textColor: [200, 160, 50] } }]
-      : [shortSym(r.symbol, 30), r.acquisitionYear || "", f(r.proceeds), f(r.dispositionACB), f(r.outlays), f(r.gainLoss)]
+      ? [shortSym(r.symbol, 30), { content: r.note || "Stock Split", colSpan: 6, styles: { fontStyle: "italic", textColor: [200, 160, 50] } }]
+      : [shortSym(r.symbol, 30), r.date || "", r.acquisitionYear || "", f(r.proceeds), f(r.dispositionACB), f(r.outlays), f(r.gainLoss)]
     ),
-    foot: [["Totals", "", f(report.totalProceeds), f(report.totalACB), f(report.totalOutlays), f(report.net)]],
+    foot: [["Totals", "", "", f(report.totalProceeds), f(report.totalACB), f(report.totalOutlays), f(report.net)]],
     headStyles: { fillColor: [30, 41, 59], textColor: 255, fontSize: 8, fontStyle: "bold" },
     footStyles: { fillColor: [30, 41, 59], textColor: 255, fontSize: 9, fontStyle: "bold" },
     bodyStyles: { fontSize: 8 },
     columnStyles: {
-      0: { cellWidth: 50 },
-      1: { cellWidth: 18, halign: "center" },
-      2: { cellWidth: 28, halign: "right" },
-      3: { cellWidth: 28, halign: "right" },
-      4: { cellWidth: 24, halign: "right" },
-      5: { cellWidth: 28, halign: "right" },
+      0: { cellWidth: 38 },
+      1: { cellWidth: 22, halign: "center" },
+      2: { cellWidth: 16, halign: "center" },
+      3: { cellWidth: 26, halign: "right" },
+      4: { cellWidth: 26, halign: "right" },
+      5: { cellWidth: 22, halign: "right" },
+      6: { cellWidth: 26, halign: "right" },
     },
     margin: { left: 14, right: 14 },
     didDrawPage: () => {
@@ -1821,15 +1823,16 @@ export default function ACBTracker() {
             {report.rows.length > 0 ? (
               <div>
                 {/* Table header */}
-                <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1.5fr 1.5fr 1fr 1.5fr", gap: 4, padding: "8px 12px", background: "#252d3d", borderRadius: "10px 10px 0 0", fontSize: 10, fontWeight: 600, color: "#9ca3af" }}>
-                  <div>Description</div><div style={{ textAlign: "center" }}>Yr Acq</div><div style={{ textAlign: "right" }}>Proceeds</div><div style={{ textAlign: "right" }}>ACB</div><div style={{ textAlign: "right" }}>Expenses</div><div style={{ textAlign: "right" }}>Gain/Loss</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1.8fr 1.2fr 0.8fr 1.3fr 1.3fr 1fr 1.3fr", gap: 4, padding: "8px 12px", background: "#252d3d", borderRadius: "10px 10px 0 0", fontSize: 10, fontWeight: 600, color: "#9ca3af" }}>
+                  <div>Description</div><div style={{ textAlign: "center" }}>Sold</div><div style={{ textAlign: "center" }}>Yr Acq</div><div style={{ textAlign: "right" }}>Proceeds</div><div style={{ textAlign: "right" }}>ACB</div><div style={{ textAlign: "right" }}>Expenses</div><div style={{ textAlign: "right" }}>Gain/Loss</div>
                 </div>
                 {report.rows.map((r, i) => (
-                  <div key={i} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1.5fr 1.5fr 1fr 1.5fr", gap: 4, padding: "8px 12px", background: i % 2 === 0 ? "#141820" : "#1a1f2e", borderBottom: "1px solid #2d3548", fontSize: 12 }}>
-                    <div style={{ color: "#fff", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.symbol}>{shortSym(r.symbol, 18)}</div>
+                  <div key={i} style={{ display: "grid", gridTemplateColumns: "1.8fr 1.2fr 0.8fr 1.3fr 1.3fr 1fr 1.3fr", gap: 4, padding: "8px 12px", background: i % 2 === 0 ? "#141820" : "#1a1f2e", borderBottom: "1px solid #2d3548", fontSize: 12 }}>
+                    <div style={{ color: "#fff", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.symbol}>{shortSym(r.symbol, 14)}</div>
                     {r.type === "STOCK_SPLIT" ? (
-                      <div style={{ gridColumn: "2 / 7", color: "#fbbf24", fontStyle: "italic" }}>{r.note || "Stock Split"}</div>
+                      <div style={{ gridColumn: "2 / 8", color: "#fbbf24", fontStyle: "italic" }}>{r.note || "Stock Split"}</div>
                     ) : (<>
+                      <div style={{ textAlign: "center", color: "#9ca3af", fontSize: 11 }}>{r.date || ""}</div>
                       <div style={{ textAlign: "center", color: "#9ca3af" }}>{r.acquisitionYear}</div>
                       <div style={{ textAlign: "right", color: "#d1d5db" }}>{fmt(r.proceeds)}</div>
                       <div style={{ textAlign: "right", color: "#d1d5db" }}>{fmt(r.dispositionACB)}</div>
@@ -1839,8 +1842,8 @@ export default function ACBTracker() {
                   </div>
                 ))}
                 {/* Totals row */}
-                <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1.5fr 1.5fr 1fr 1.5fr", gap: 4, padding: "8px 12px", background: "#252d3d", borderRadius: "0 0 10px 10px", fontSize: 12, fontWeight: 700, color: "#fff" }}>
-                  <div>Totals</div><div /><div style={{ textAlign: "right" }}>{fmt(report.totalProceeds)}</div><div style={{ textAlign: "right" }}>{fmt(report.totalACB)}</div><div style={{ textAlign: "right" }}>{fmt(report.totalOutlays)}</div><div style={{ textAlign: "right", color: report.net >= 0 ? "#34d399" : "#f87171" }}>{fmt(report.net)}</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1.8fr 1.2fr 0.8fr 1.3fr 1.3fr 1fr 1.3fr", gap: 4, padding: "8px 12px", background: "#252d3d", borderRadius: "0 0 10px 10px", fontSize: 12, fontWeight: 700, color: "#fff" }}>
+                  <div>Totals</div><div /><div /><div style={{ textAlign: "right" }}>{fmt(report.totalProceeds)}</div><div style={{ textAlign: "right" }}>{fmt(report.totalACB)}</div><div style={{ textAlign: "right" }}>{fmt(report.totalOutlays)}</div><div style={{ textAlign: "right", color: report.net >= 0 ? "#34d399" : "#f87171" }}>{fmt(report.net)}</div>
                 </div>
                 <div style={{ ...S.card, marginTop: 12, fontSize: 13 }}>
                   <div style={{ color: "#9ca3af" }}>Taxable Capital Gains / Losses (50% inclusion)</div>
