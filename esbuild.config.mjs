@@ -1,5 +1,6 @@
 import * as esbuild from "esbuild";
-import { writeFileSync, rmSync, mkdirSync, existsSync } from "fs";
+import { writeFileSync, rmSync, mkdirSync, existsSync, readFileSync } from "fs";
+const { version } = JSON.parse(readFileSync("./package.json", "utf8"));
 
 const isProd = !process.argv.includes("--dev");
 
@@ -22,6 +23,7 @@ async function build() {
     chunkNames: isProd ? "chunk-[hash]" : "[name]",
     define: {
       "process.env.NODE_ENV": isProd ? '"production"' : '"development"',
+      "__APP_VERSION__": JSON.stringify(version),
     },
   });
 
