@@ -1830,12 +1830,13 @@ export default function ACBTracker() {
             )}
             {report.rows.length > 0 ? (
               <div>
+                <div style={{ overflowX: "auto" }}>
                 {/* Table header */}
-                <div style={{ display: "grid", gridTemplateColumns: "1.8fr 1.2fr 0.8fr 1.3fr 1.3fr 1fr 1.3fr", gap: 4, padding: "8px 12px", background: "#252d3d", borderRadius: "10px 10px 0 0", fontSize: 10, fontWeight: 600, color: "#9ca3af" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1.8fr 1.2fr 0.8fr 1.3fr 1.3fr 1fr 1.3fr", gap: 4, padding: "8px 12px", background: "#252d3d", borderRadius: "10px 10px 0 0", fontSize: 10, fontWeight: 600, color: "#9ca3af", minWidth: 480 }}>
                   <div>Description</div><div style={{ textAlign: "center" }}>Sold</div><div style={{ textAlign: "center" }}>Yr Acq</div><div style={{ textAlign: "right" }}>Proceeds</div><div style={{ textAlign: "right" }}>ACB</div><div style={{ textAlign: "right" }}>Expenses</div><div style={{ textAlign: "right" }}>Gain/Loss</div>
                 </div>
                 {report.rows.map((r, i) => (
-                  <div key={i} style={{ display: "grid", gridTemplateColumns: "1.8fr 1.2fr 0.8fr 1.3fr 1.3fr 1fr 1.3fr", gap: 4, padding: "8px 12px", background: i % 2 === 0 ? "#141820" : "#1a1f2e", borderBottom: "1px solid #2d3548", fontSize: 12 }}>
+                  <div key={i} style={{ display: "grid", gridTemplateColumns: "1.8fr 1.2fr 0.8fr 1.3fr 1.3fr 1fr 1.3fr", gap: 4, padding: "8px 12px", background: i % 2 === 0 ? "#141820" : "#1a1f2e", borderBottom: "1px solid #2d3548", fontSize: 12, minWidth: 480 }}>
                     <div style={{ color: "#fff", fontWeight: 500, wordBreak: "break-word", fontSize: 10 }}>{r.symbol}</div>
                     {r.type === "STOCK_SPLIT" ? (
                       <div style={{ gridColumn: "2 / 8", color: "#fbbf24", fontStyle: "italic" }}>{r.note || "Stock Split"}</div>
@@ -1850,8 +1851,9 @@ export default function ACBTracker() {
                   </div>
                 ))}
                 {/* Totals row */}
-                <div style={{ display: "grid", gridTemplateColumns: "1.8fr 1.2fr 0.8fr 1.3fr 1.3fr 1fr 1.3fr", gap: 4, padding: "8px 12px", background: "#252d3d", borderRadius: "0 0 10px 10px", fontSize: 12, fontWeight: 700, color: "#fff" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1.8fr 1.2fr 0.8fr 1.3fr 1.3fr 1fr 1.3fr", gap: 4, padding: "8px 12px", background: "#252d3d", borderRadius: "0 0 10px 10px", fontSize: 12, fontWeight: 700, color: "#fff", minWidth: 480 }}>
                   <div>Totals</div><div /><div /><div style={{ textAlign: "right" }}>{fmt(report.totalProceeds)}</div><div style={{ textAlign: "right" }}>{fmt(report.totalACB)}</div><div style={{ textAlign: "right" }}>{fmt(report.totalOutlays)}</div><div style={{ textAlign: "right", color: report.net >= 0 ? "#34d399" : "#f87171" }}>{fmt(report.net)}</div>
+                </div>
                 </div>
                 <div style={{ ...S.card, marginTop: 12, fontSize: 13 }}>
                   <div style={{ color: "#9ca3af" }}>Taxable Capital Gains / Losses (50% inclusion)</div>
