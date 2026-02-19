@@ -8,7 +8,7 @@ import * as pdfjsLib from "pdfjs-dist";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
-const APP_VERSION = "1.6.8";
+const APP_VERSION = "1.6.9";
 const uid = () => Math.random().toString(36).slice(2, 10);
 let _dp = 2;
 const fmt = (n) => { const v = (n != null && !isNaN(n)) ? Number(n) : 0; return `$${v.toLocaleString("en-CA", { minimumFractionDigits: _dp, maximumFractionDigits: _dp })}`; };
@@ -187,7 +187,15 @@ function exportSchedule3PDF(report, portfolioName, year) {
       ? [r.symbol, { content: r.note || "Stock Split", colSpan: 6, styles: { fontStyle: "italic", textColor: [200, 160, 50] } }]
       : [r.symbol, r.date || "", r.acquisitionYear || "", f(r.proceeds), f(r.dispositionACB), f(r.outlays), f(r.gainLoss)]
     ),
-    foot: [["Totals", "", "", f(report.totalProceeds), f(report.totalACB), f(report.totalOutlays), f(report.net)]],
+    foot: [[
+      "Totals",
+      { content: "", styles: { halign: "center" } },
+      { content: "", styles: { halign: "center" } },
+      { content: f(report.totalProceeds), styles: { halign: "right" } },
+      { content: f(report.totalACB), styles: { halign: "right" } },
+      { content: f(report.totalOutlays), styles: { halign: "right" } },
+      { content: f(report.net), styles: { halign: "right" } },
+    ]],
     headStyles: { fillColor: [30, 41, 59], textColor: 255, fontSize: 8, fontStyle: "bold" },
     footStyles: { fillColor: [30, 41, 59], textColor: 255, fontSize: 9, fontStyle: "bold" },
     bodyStyles: { fontSize: 8 },
@@ -1828,7 +1836,7 @@ export default function ACBTracker() {
                 </div>
                 {report.rows.map((r, i) => (
                   <div key={i} style={{ display: "grid", gridTemplateColumns: "1.8fr 1.2fr 0.8fr 1.3fr 1.3fr 1fr 1.3fr", gap: 4, padding: "8px 12px", background: i % 2 === 0 ? "#141820" : "#1a1f2e", borderBottom: "1px solid #2d3548", fontSize: 12 }}>
-                    <div style={{ color: "#fff", fontWeight: 500, wordBreak: "break-word" }}>{r.symbol}</div>
+                    <div style={{ color: "#fff", fontWeight: 500, wordBreak: "break-word", fontSize: 10 }}>{r.symbol}</div>
                     {r.type === "STOCK_SPLIT" ? (
                       <div style={{ gridColumn: "2 / 8", color: "#fbbf24", fontStyle: "italic" }}>{r.note || "Stock Split"}</div>
                     ) : (<>
