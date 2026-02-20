@@ -1920,6 +1920,14 @@ My Portfolio,VFV.TO,2024-12-31,ROC,,,,125.00,Annual ROC`}</pre>
               ))}
             </div>
             <div style={S.card}>
+              <div style={{ fontSize: 15, fontWeight: 600, color: "#fff", marginBottom: 10 }}>Transaction Entry Tips</div>
+              <div style={{ fontSize: 13, color: "#9ca3af", lineHeight: 1.7 }}>
+                <b style={{ color: "#e5e7eb" }}>Auto-calculation:</b> when adding or editing a transaction, you only need to enter two of the three fields — the third will be filled in automatically when you leave the field:<br />
+                &bull; Enter <b style={{ color: "#22d3ee" }}>Shares + Price</b> → <b style={{ color: "#22d3ee" }}>Amount</b> is calculated (shares × price)<br />
+                &bull; Enter <b style={{ color: "#f472b6" }}>Shares + Amount</b> → <b style={{ color: "#f472b6" }}>Price</b> is calculated (amount ÷ shares)
+              </div>
+            </div>
+            <div style={S.card}>
               <div style={{ fontSize: 15, fontWeight: 600, color: "#fff", marginBottom: 10 }}>ETF Distributions (CDS Tax Breakdown)</div>
               <div style={{ fontSize: 13, color: "#9ca3af", lineHeight: 1.7 }}>
                 Data source: <b style={{ color: "#60a5fa" }}>CDS Innovations Inc.</b> Tax Breakdown Service (<a href="https://services.cds.ca/applications/taxforms/taxforms.nsf/Pages/-EN-LimitedPartnershipsandIncomeTrusts?Open" target="_blank" rel="noopener noreferrer" style={{ color: "#818cf8" }}>services.cds.ca</a>). This service consolidates tax breakdown data for all Canadian ETFs, REITs, and exchange-traded trusts as mandated by the Income Tax Act.
